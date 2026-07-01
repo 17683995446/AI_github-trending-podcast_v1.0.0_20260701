@@ -1,0 +1,43 @@
+{# Jinja2 模板：中文播客文档 #}
+# {{ repo.full_name }}：{{ repo.description[:60] if repo.description else 'GitHub 趋势项目' }}
+
+> 本文档由 GitHub Trending Audio 自动生成
+
+## 项目概览
+
+| 字段 | 信息 |
+|------|------|
+| 仓库 | [{{ repo.full_name }}]({{ repo.url }}) |
+| 星标 | ⭐ {{ "{:,}".format(repo.stars) }} |
+| Fork | 🍴 {{ "{:,}".format(repo.forks) }} |
+| 编程语言 | {{ repo.language or 'N/A' }} |
+| 开源协议 | {{ repo.license_name or 'N/A' }} |
+| 标签 | {{ topics_str }} |
+| 创建时间 | {{ repo.created_at[:10] if repo.created_at else 'N/A' }} |
+
+## 项目简介
+
+{{ repo.description or '该项目暂无描述。' }}
+
+## 架构图
+
+```mermaid
+{{ arch_mermaid }}
+```
+
+## 使用流程
+
+```mermaid
+{{ flow_mermaid }}
+```
+
+## 详细解读
+
+{{ readme_excerpt }}
+
+## 相关链接
+
+- 仓库地址：[{{ repo.full_name }}]({{ repo.url }})
+{% if repo.homepage %}
+- 项目主页：[{{ repo.homepage }}]({{ repo.homepage }})
+{% endif %}

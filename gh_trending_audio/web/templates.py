@@ -5,6 +5,108 @@ They are extracted verbatim from the original web_dashboard.py and must
 not be reformatted (the doubled braces {{ }} are intentional).
 """
 
+# ── Phase 6: 共享 CSS（主题变量 + 基础组件）──
+# 提取自三个模板中重复的主题定义，统一维护一处
+_THEME_CSS = """
+        /* ── 主题变量 ── */
+        :root {{
+            --bg: #0d1117;
+            --card-bg: #161b22;
+            --text: #c9d1d9;
+            --text-dim: #8b949e;
+            --accent: #58a6ff;
+            --accent-glow: rgba(88,166,255,0.12);
+            --green: #3fb950;
+            --yellow: #d29922;
+            --red: #f85149;
+            --purple: #bc8cff;
+            --border: #30363d;
+            --hover-bg: rgba(255,255,255,0.06);
+            --radius: 8px;
+            --transition: all 0.2s ease;
+        }}
+        [data-theme="light"] {{
+            --bg: #f6f8fa;
+            --card-bg: #ffffff;
+            --text: #1f2328;
+            --text-dim: #656d76;
+            --accent: #0969da;
+            --accent-glow: rgba(9,105,218,0.10);
+            --green: #1a7f37;
+            --yellow: #9a6700;
+            --red: #cf222e;
+            --purple: #8250df;
+            --border: #d0d7de;
+            --hover-bg: rgba(0,0,0,0.04);
+        }}
+        [data-theme="midnight"] {{
+            --bg: #0f0f23;
+            --card-bg: #1a1a3e;
+            --text: #e0e0ff;
+            --text-dim: #8888bb;
+            --accent: #7c7cff;
+            --accent-glow: rgba(124,124,255,0.15);
+            --green: #4ade80;
+            --yellow: #fbbf24;
+            --red: #f87171;
+            --purple: #c084fc;
+            --border: #2a2a5e;
+            --hover-bg: rgba(255,255,255,0.08);
+        }}
+        [data-theme="nord"] {{
+            --bg: #2e3440;
+            --card-bg: #3b4252;
+            --text: #d8dee9;
+            --text-dim: #81a1c1;
+            --accent: #88c0d0;
+            --accent-glow: rgba(136,192,208,0.15);
+            --green: #a3be8c;
+            --yellow: #ebcb8b;
+            --red: #bf616a;
+            --purple: #b48ead;
+            --border: #434c5e;
+            --hover-bg: rgba(255,255,255,0.06);
+        }}
+"""
+
+# 通用按钮 + 滚动条样式
+_COMMON_CSS = """
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            background: var(--bg); color: var(--text);
+            transition: background 0.3s ease, color 0.3s ease;
+        }}
+        a {{ color: var(--accent); text-decoration: none; }}
+        a:hover {{ text-decoration: underline; }}
+        ::-webkit-scrollbar {{ width: 8px; height: 8px; }}
+        ::-webkit-scrollbar-track {{ background: transparent; }}
+        ::-webkit-scrollbar-thumb {{ background: var(--border); border-radius: 4px; }}
+        ::-webkit-scrollbar-thumb:hover {{ background: var(--text-dim); }}
+        .btn {{
+            display: inline-block; padding: 8px 16px; border-radius: var(--radius);
+            font-size: 14px; cursor: pointer; border: 1px solid var(--border);
+            background: var(--card-bg); color: var(--text); text-decoration: none;
+            transition: var(--transition); white-space: nowrap;
+        }}
+        .btn:hover {{ border-color: var(--accent); }}
+        .theme-switcher {{ display: flex; gap: 6px; align-items: center; }}
+        .theme-dot {{
+            width: 18px; height: 18px; border-radius: 50%;
+            border: 2px solid transparent; cursor: pointer; transition: var(--transition);
+        }}
+        .theme-dot.active {{ border-color: var(--accent); transform: scale(1.15); }}
+        .copy-toast {{
+            position: fixed; bottom: 24px; right: 24px;
+            background: var(--card-bg); border: 1px solid var(--border);
+            color: var(--text); padding: 10px 20px; border-radius: var(--radius);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 9999;
+            opacity: 0; transition: opacity 0.3s ease; pointer-events: none;
+        }}
+        .copy-toast.show {{ opacity: 1; }}
+"""
+
+
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -493,6 +595,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         .modal-tip {{ font-size: 12px; color: var(--text-dim); margin-top: 8px; line-height: 1.6; }}
         .modal-tip code {{ background: var(--bg); padding: 1px 6px; border-radius: 4px; color: var(--accent); }}
     </style>
+    <!-- Phase 6: Fuse.js 模糊搜索 + lucide 图标 -->
+    <script src="https://cdn.jsdelivr.net/npm/fuse.js@7/dist/fuse.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
 </head>
 <body data-theme="dark">
     <!-- 主题初始化（必须在 CSS 之后、内容之前执行，避免闪烁） -->
@@ -896,18 +1001,37 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
         // ── 项目列表渲染（搜索 + 筛选 + 排序）──
         function renderProjects() {{
-            const search = document.getElementById('searchInput').value.toLowerCase();
+            const search = document.getElementById('searchInput').value;
             const langFilter = document.getElementById('filterLang').value;
             const audioFilter = document.getElementById('filterAudio').value;
             const sortBy = document.getElementById('sortBy').value;
 
             let list = ALL_PROJECTS.filter(p => {{
-                if (search && !p.name.toLowerCase().includes(search) && !(p.description||'').toLowerCase().includes(search)) return false;
                 if (langFilter && p.language !== langFilter) return false;
                 if (audioFilter === 'has_audio' && !p.has_audio) return false;
                 if (audioFilter === 'no_audio' && p.has_audio) return false;
                 return true;
             }});
+
+            // Phase 6: 使用 Fuse.js 模糊搜索（容错匹配、拼音支持）
+            if (search) {{
+                if (window.Fuse) {{
+                    const fuse = new Fuse(list, {{
+                        keys: ['name', 'description'],
+                        threshold: 0.4,
+                        ignoreLocation: true,
+                        minMatchCharLength: 1,
+                    }});
+                    list = fuse.search(search).map(r => r.item);
+                }} else {{
+                    // 退化到精确匹配
+                    const lower = search.toLowerCase();
+                    list = list.filter(p =>
+                        p.name.toLowerCase().includes(lower) ||
+                        (p.description||'').toLowerCase().includes(lower)
+                    );
+                }}
+            }}
 
             list.sort((a, b) => {{
                 if (sortBy === 'stars') return (b.stars||0) - (a.stars||0);
@@ -2741,6 +2865,13 @@ PROJECT_HTML = """<!DOCTYPE html>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.10.0/build/styles/github-dark.min.css">
     <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.10.0/build/highlight.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- Phase 4: 前端增强库 -->
+    <script src="https://cdn.jsdelivr.net/npm/jquery@3/dist/jquery.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tocbot@4/dist/tocbot.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tocbot@4/dist/tocbot.css">
+    <script src="https://cdn.jsdelivr.net/npm/mark.js@8/mark.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jstree@3/dist/themes/default/style.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/jstree@3/dist/jstree.min.js"></script>
 </head>
 <body data-theme="dark">
     <script>
@@ -3187,21 +3318,55 @@ PROJECT_HTML = """<!DOCTYPE html>
                 toc.classList.add('hidden');
                 return;
             }}
-            // 生成目录
-            var headings = document.querySelectorAll('.md-content h1, .md-content h2, .md-content h3');
+            // Phase 4: 使用 tocbot 生成目录（自动滚动高亮、嵌套缩进）
+            var mdContent = document.querySelector('.md-content');
+            if (!mdContent) {{
+                toc.innerHTML = '<div style="color:var(--text-dim);">暂无文档内容</div>';
+                toc.classList.remove('hidden');
+                return;
+            }}
+            // 为标题添加 id（tocbot 需要）
+            var headings = mdContent.querySelectorAll('h1, h2, h3');
             if (headings.length === 0) {{
                 toc.innerHTML = '<div style="color:var(--text-dim);">暂无标题</div>';
             }} else {{
-                var html = '';
                 headings.forEach(function(h, i) {{
-                    var id = 'heading-' + i;
-                    h.id = id;
-                    var level = h.tagName.toLowerCase();
-                    var text = h.textContent || '';
-                    html += '<a class="level-' + level.replace('h','') + '" href="#' + id + '" onclick="document.getElementById(&quot;mdToc&quot;).classList.add(&quot;hidden&quot;)">' +
-                        escapeHtml(text) + '</a>';
+                    if (!h.id) h.id = 'toc-heading-' + i;
                 }});
-                toc.innerHTML = html;
+                toc.innerHTML = '';
+                if (window.tocbot) {{
+                    try {{
+                        tocbot.init({{
+                            tocSelector: '#mdToc',
+                            contentSelector: '.md-content',
+                            headingSelector: 'h1, h2, h3',
+                            headingsOffset: 80,
+                            scrollSmooth: true,
+                            scrollSmoothDuration: 300,
+                            onClick: function() {{
+                                document.getElementById('mdToc').classList.add('hidden');
+                            }}
+                        }});
+                    }} catch(e) {{
+                        // tocbot 失败时退化到简单列表
+                        var html = '';
+                        headings.forEach(function(h, i) {{
+                            var level = h.tagName.toLowerCase();
+                            var text = h.textContent || '';
+                            html += '<a class="level-' + level.replace('h','') + '" href="#' + h.id + '">' + escapeHtml(text) + '</a>';
+                        }});
+                        toc.innerHTML = html;
+                    }}
+                }} else {{
+                    // tocbot 未加载时退化
+                    var html = '';
+                    headings.forEach(function(h, i) {{
+                        var level = h.tagName.toLowerCase();
+                        var text = h.textContent || '';
+                        html += '<a class="level-' + level.replace('h','') + '" href="#' + h.id + '">' + escapeHtml(text) + '</a>';
+                    }});
+                    toc.innerHTML = html;
+                }}
             }}
             toc.classList.remove('hidden');
         }}
@@ -3383,7 +3548,23 @@ PROJECT_HTML = """<!DOCTYPE html>
                     bubble.textContent = '⚠ ' + data.error;
                 }} else {{
                     bubble.className = 'qa-bubble ai';
-                    bubble.textContent = data.answer || '(无回答)';
+                    // Phase 6: 支持 Markdown 渲染（代码高亮 + Mermaid）
+                    var answerText = data.answer || '(无回答)';
+                    if (window.marked && typeof marked.parse === 'function') {{
+                        try {{
+                            bubble.innerHTML = marked.parse(answerText);
+                            // 代码高亮
+                            if (window.hljs) {{
+                                bubble.querySelectorAll('pre code').forEach(function(el) {{
+                                    try {{ hljs.highlightElement(el); }} catch(e) {{}}
+                                }});
+                            }}
+                        }} catch(e) {{
+                            bubble.textContent = answerText;
+                        }}
+                    }} else {{
+                        bubble.textContent = answerText;
+                    }}
                 }}
                 box.appendChild(bubble);
                 box.scrollTop = box.scrollHeight;
@@ -3421,24 +3602,50 @@ PROJECT_HTML = """<!DOCTYPE html>
         }};
 
         // 基于命中区间的关键词高亮（不依赖正则转义，按查询中的 | 拆分多关键词）
+        // Phase 4: 增强搜索高亮（支持正则 + mark.js DOM 高亮）
         var csHighlight = function(raw, query) {{
             raw = raw || '';
-            var pieces = String(query || '').split('|');
+            if (!query) return csEscapeHtml(raw);
+
+            // 尝试正则匹配（当 query 含有正则特殊字符时）
+            var pieces = String(query).split('|');
             var i, p, lp, from, idx;
             var ranges = [];
             var lower = raw.toLowerCase();
-            for (i = 0; i < pieces.length; i++) {{
-                p = pieces[i].trim();
-                if (!p) continue;
-                lp = p.toLowerCase();
-                from = 0;
-                while (true) {{
-                    idx = lower.indexOf(lp, from);
-                    if (idx === -1) break;
-                    ranges.push([idx, idx + lp.length]);
-                    from = idx + lp.length;
+
+            // 正则模式检测：如果 query 包含 . * + ? ^ $ ( ) [ ] { } | \ ，尝试正则匹配
+            var hasRegex = /[.*+?^${}()|[\]\\]/.test(query);
+            if (hasRegex && window.mark) {{
+                // 使用 mark.js 的正则能力进行匹配
+                try {{
+                    var regex = new RegExp(query, 'gi');
+                    var match;
+                    while ((match = regex.exec(raw)) !== null) {{
+                        ranges.push([match.index, match.index + match[0].length]);
+                        if (match[0].length === 0) regex.lastIndex++; // 防止零宽匹配死循环
+                    }}
+                }} catch(e) {{
+                    // 正则无效时退化到普通匹配
+                    hasRegex = false;
                 }}
             }}
+
+            if (!hasRegex || ranges.length === 0) {{
+                // 普通关键词匹配
+                for (i = 0; i < pieces.length; i++) {{
+                    p = pieces[i].trim();
+                    if (!p) continue;
+                    lp = p.toLowerCase();
+                    from = 0;
+                    while (true) {{
+                        idx = lower.indexOf(lp, from);
+                        if (idx === -1) break;
+                        ranges.push([idx, idx + lp.length]);
+                        from = idx + lp.length;
+                    }}
+                }}
+            }}
+
             ranges.sort(function(a, b) {{ return a[0] - b[0]; }});
             var merged = [];
             var last = null;
@@ -3460,6 +3667,28 @@ PROJECT_HTML = """<!DOCTYPE html>
             out += csEscapeHtml(raw.slice(pos));
             return out;
         }};
+
+        // mark.js DOM 高亮辅助函数（用于在已渲染的 DOM 中高亮关键词）
+        function csHighlightDOM(element, query) {{
+            if (!element || !query) return;
+            if (window.mark && typeof mark === 'function') {{
+                try {{
+                    var keywords = String(query).split('|').filter(function(k) {{
+                        return k.trim().length > 0;
+                    }}});
+                    mark(element, {{
+                        separateWordSearch: false,
+                        accuracy: 'partially',
+                        acrossElements: true,
+                        className: 'cs-mark',
+                        each: function(el) {{
+                            el.style.backgroundColor = 'rgba(210,153,34,0.3)';
+                            el.style.color = 'inherit';
+                        }}
+                    }});
+                }} catch(e) {{}}
+            }}
+        }}
 
         function runCodeSearch() {{
             var section = document.getElementById('codeSearchSection');
@@ -3722,6 +3951,7 @@ PROJECT_HTML = """<!DOCTYPE html>
                 return;
             }}
             container.innerHTML = '<div class="tree-loading">⏳ 正在加载文件结构...</div>';
+
             fetch('/api/filetree?repo=' + encodeURIComponent(FT_REPO))
                 .then(function(r) {{ return r.json(); }})
                 .then(function(data) {{
@@ -3729,20 +3959,77 @@ PROJECT_HTML = """<!DOCTYPE html>
                         container.innerHTML = '<div class="tree-error">⚠ ' + data.error + '</div>';
                         return;
                     }}
+
                     var entries = (data.tree || []).filter(function(e) {{
                         return e.type === 'tree' || e.type === 'blob';
                     }});
-                    var limited = entries.slice(0, 200);  // 限制前 200 项
-                    var tree = buildTree(limited);
-                    sortTree(tree);
-                    container.innerHTML = '';
-                    container.appendChild(renderTree(tree));
-                    if (data.truncated || entries.length > 200) {{
-                        var note = document.createElement('div');
-                        note.className = 'tree-note';
-                        note.textContent = '⚠ 仓库文件较多，仅显示前 200 项' +
-                            (data.truncated ? '（GitHub 返回已被截断）' : '');
-                        container.appendChild(note);
+                    var limited = entries.slice(0, 500);  // jstree 虚拟化支持更多项
+
+                    // Phase 4: 使用 jstree 渲染文件树
+                    if (window.jQuery && typeof jQuery.fn.jstree === 'function') {{
+                        // 转换为 jstree 数据格式
+                        var jsData = limited.map(function(e) {{
+                            var parts = e.path.split('/');
+                            var name = parts[parts.length - 1];
+                            var parentPath = parts.slice(0, -1).join('/');
+                            var parentId = parentPath ? 'node_' + parentPath : '#';
+                            var isDir = e.type === 'tree';
+                            return {{
+                                id: 'node_' + e.path,
+                                parent: parentId,
+                                text: name,
+                                type: isDir ? 'folder' : 'file',
+                                data: {{ path: e.path, type: e.type }}
+                            }};
+                        }});
+
+                        container.innerHTML = '';
+                        jQuery(container).jstree({{
+                            core: {{
+                                data: jsData,
+                                themes: {{
+                                    name: 'default',
+                                    responsive: true,
+                                    dots: false
+                                }},
+                                check_callback: true
+                            }},
+                            plugins: ['types', 'search'],
+                            types: {{
+                                folder: {{ icon: 'jstree-folder' }},
+                                file: {{ icon: 'jstree-file' }}
+                            }},
+                            search: {{ case_sensitive: false, show_only_matches: true }}
+                        }});
+
+                        // 文件点击事件
+                        jQuery(container).on('select_node.jstree', function(e, nodeData) {{
+                            var node = nodeData.node;
+                            if (node.data && node.data.type === 'blob') {{
+                                loadFile(node.data.path, null);
+                            }}
+                        }});
+
+                        if (data.truncated || entries.length > 500) {{
+                            var note = document.createElement('div');
+                            note.className = 'tree-note';
+                            note.textContent = '⚠ 仓库文件较多，仅显示前 500 项' +
+                                (data.truncated ? '（GitHub 返回已被截断）' : '');
+                            container.appendChild(note);
+                        }}
+                    }} else {{
+                        // jstree 未加载时退化到原有渲染
+                        var tree = buildTree(limited);
+                        sortTree(tree);
+                        container.innerHTML = '';
+                        container.appendChild(renderTree(tree));
+                        if (data.truncated || entries.length > 500) {{
+                            var note = document.createElement('div');
+                            note.className = 'tree-note';
+                            note.textContent = '⚠ 仓库文件较多，仅显示前 500 项' +
+                                (data.truncated ? '（GitHub 返回已被截断）' : '');
+                            container.appendChild(note);
+                        }}
                     }}
                 }})
                 .catch(function(err) {{

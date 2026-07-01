@@ -63,7 +63,21 @@ def parse_md_metadata(md: str) -> dict:
 
 
 def get_audio_duration(audio_path) -> float | None:
-    """获取音频时长（秒），用 ffprobe 快速读取"""
+    """获取音频时长（秒），优先用 mutagen（纯 Python），退化到 ffprobe。"""
+    # Phase 5: 优先使用 mutagen（无外部依赖）
+    try:
+        from mutagen import File as MutagenFile
+        audio = MutagenFile(str(audio_path))
+        if audio is not None and audio.info is not None:
+            duration = getattr(audio.info, "length", None)
+            if duration is not None:
+                return float(duration)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # 退化到 ffprobe subprocess
     import subprocess
     import shutil as _shutil
     if not _shutil.which("ffprobe"):
@@ -171,7 +185,21 @@ def markdown_to_html(md: str) -> str:
 
     try:
         import markdown as md_lib
-        html = md_lib.markdown(md_stashed, extensions=["fenced_code", "tables", "codehilite"])
+        # Phase 4: 使用 pymdown-extensions 增强渲染（GFM 任务列表、删除线、emoji 等）
+        extensions = ["fenced_code", "tables", "codehilite"]
+        extension_configs = {}
+        try:
+            import pymdownx  # noqa: F401
+            extensions.extend([
+                "pymdownx.tilde",          # ~~删除线~~
+                "pymdownx.tasklist",       # - [ ] 任务列表
+                "pymdownx.emoji",          # :emoji: 表情
+                "pymdownx.superfences",    # 嵌套围栏代码块
+                "pymdownx.magiclink",      # 自动链接 URL/PR/Issue
+            ])
+        except ImportError:
+            pass  # pymdown-extensions 不可用时用基础扩展
+        html = md_lib.markdown(md_stashed, extensions=extensions, extension_configs=extension_configs)
     except ImportError:
         # 退化方案：手工转换标题，其余包裹在 <pre> 中
         html = md_stashed.replace("<", "&lt;").replace(">", "&gt;")

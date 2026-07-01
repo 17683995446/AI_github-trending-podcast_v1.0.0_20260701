@@ -5,5 +5,26 @@ markdown>=3.5             # README Markdown 解析
 beautifulsoup4>=4.12.0    # 从 HTML 中提取纯文本
 rich>=13.7.0              # 美观的 CLI 输出
 
+# Phase 1: 安全与音频质量
+pydub>=0.25.1             # 音频拼接（交叉淡入淡出，替代二进制 cat）
+python-dotenv>=1.0.0      # .env 文件加载（安全存储 API Key）
+
+# Phase 2: 缓存与 LLM 一致性
+cachetools>=5.3.0         # TTL/LRU 缓存（替代内存字典，自动过期）
+
+# Phase 3: GitHub SDK
+PyGithub>=2.1.0           # GitHub API SDK（替代手写 REST URL + base64 解码）
+
+# Phase 4: 前端 Markdown 增强
+pymdown-extensions>=10.0  # GFM 扩展（任务列表、删除线、emoji、自动链接）
+
+# Phase 5: LLM 质量与实时性
+mutagen>=1.47.0           # 音频元数据读取（替代 ffprobe subprocess，纯 Python）
+instructor>=1.0.0         # LLM 结构化输出（pydantic 校验，替代字符串分割）
+pydantic>=2.0.0           # 数据模型校验（instructor 依赖）
+
+# Phase 6: 代码质量与体验打磨
+Jinja2>=3.1.0             # 模板引擎（替代 f-string 文档模板，支持继承与复杂逻辑）
+
 # 可选：LLM 增强（无需安装也能运行，仅在 --use-llm 时需要）
 # openai>=1.10.0

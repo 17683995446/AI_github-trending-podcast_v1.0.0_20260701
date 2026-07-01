@@ -35,6 +35,20 @@ from .styles import STYLES
 console = Console()
 
 
+# ── Phase 5: 结构化输出模型（instructor + pydantic）──────────────
+try:
+    from pydantic import BaseModel, Field
+
+    class PodcastScript(BaseModel):
+        """LLM 结构化输出：播客文档 + 对话脚本。"""
+        markdown: str = Field(..., description="项目深度解读的 Markdown 文档")
+        audio_script: str = Field(..., description="双人对话脚本，格式 A: / B: 交替")
+
+    _HAS_PYDANTIC = True
+except ImportError:
+    _HAS_PYDANTIC = False
+
+
 class LLMEnhancer:
     """使用 LLM 生成更生动的音频脚本，支持多种播客风格"""
 
@@ -103,10 +117,38 @@ class LLMEnhancer:
 
         content = response.choices[0].message.content or ""
 
-        # 解析 LLM 返回
-        parts = content.split("===AUDIO===")
-        markdown = parts[0].strip()
-        audio_script = parts[1].strip() if len(parts) > 1 else content
+        # Phase 5: 优先使用 instructor 结构化输出（消除 ===AUDIO=== 字符串分割）
+        markdown = ""
+        audio_script = ""
+        used_instructor = False
+
+        if _HAS_PYDANTIC:
+            try:
+                import instructor
+                structured_client = instructor.from_openai(client)
+                result = structured_client.chat.completions.create(
+                    model=self.model,
+                    response_model=PodcastScript,
+                    messages=[
+                        {"role": "system", "content": sys_prompt + "\n\n请以 JSON 格式返回，包含 markdown 和 audio_script 两个字段。"},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.4,
+                    max_tokens=4000,
+                    top_p=0.85,
+                )
+                markdown = result.markdown
+                audio_script = result.audio_script
+                used_instructor = True
+                console.print("[dim]  使用 instructor 结构化输出[/dim]")
+            except Exception as e:
+                console.print(f"[dim]  instructor 不可用，退化到字符串解析: {str(e)[:80]}[/dim]")
+
+        if not used_instructor:
+            # 退化到 ===AUDIO=== 字符串分割
+            parts = content.split("===AUDIO===")
+            markdown = parts[0].strip()
+            audio_script = parts[1].strip() if len(parts) > 1 else content
 
         # 将 Step 1 技术分析中的 Mermaid 架构图注入 Markdown 文档
         mermaid_code = self._extract_mermaid(tech_analysis)

@@ -1,5 +1,11 @@
 """LLM 增强器测试（不调用真实 API）。"""
+import os
 import pytest
+from unittest.mock import patch
+
+# 在导入前设置测试用 API Key
+os.environ.setdefault("LLM_API_KEY", "sk-test-key-for-unit-tests")
+
 from gh_trending_audio.llm_enhancer import LLMEnhancer
 
 
@@ -31,11 +37,29 @@ class TestLLMEnhancerInit:
         enhancer = LLMEnhancer(language="en")
         assert enhancer.language == "en"
 
+    def test_raises_error_without_key(self):
+        """无 API Key 时应抛出 ValueError。"""
+        import importlib
+        import gh_trending_audio.config as config
+        original_key = config.LLM_API_KEY
+        try:
+            config.LLM_API_KEY = ""
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("LLM_API_KEY", None)
+                importlib.reload(config)
+                with pytest.raises(ValueError, match="LLM API Key"):
+                    LLMEnhancer()
+        finally:
+            config.LLM_API_KEY = original_key
+            os.environ["LLM_API_KEY"] = "sk-test-key-for-unit-tests"
+            importlib.reload(config)
+
 
 class TestMermaidExtraction:
     """Mermaid 图表提取测试。"""
 
     def setup_method(self):
+        os.environ.setdefault("LLM_API_KEY", "sk-test-key-for-unit-tests")
         self.enhancer = LLMEnhancer()
 
     def test_extract_fenced_mermaid(self):

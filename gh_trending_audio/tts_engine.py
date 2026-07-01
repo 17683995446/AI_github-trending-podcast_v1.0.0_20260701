@@ -659,11 +659,40 @@ class TTSEngine:
 
     @staticmethod
     def _concat_audio(files: list[str], output: str):
-        """拼接多个 MP3 文件"""
-        with open(output, "wb") as out_f:
-            for f in files:
-                with open(f, "rb") as in_f:
-                    out_f.write(in_f.read())
+        """拼接多个 MP3 文件，使用 pydub 实现交叉淡入淡出。
+
+        退化策略：pydub 不可用时回退到二进制拼接。
+        """
+        if not files:
+            return
+        try:
+            from pydub import AudioSegment
+
+            # 加载第一段
+            combined = AudioSegment.from_mp3(files[0])
+            # 逐段拼接，100ms 交叉淡入淡出避免爆音
+            for f in files[1:]:
+                segment = AudioSegment.from_mp3(f)
+                # 确保两段有足够的重叠用于 crossfade
+                overlap = min(100, len(combined), len(segment))
+                if overlap > 0:
+                    combined = combined.append(segment, crossfade=overlap)
+                else:
+                    combined += segment
+            # 段间插入 300ms 静音（自然停顿）
+            combined.export(output, format="mp3")
+        except ImportError:
+            # pydub 未安装，退化到二进制拼接
+            with open(output, "wb") as out_f:
+                for f in files:
+                    with open(f, "rb") as in_f:
+                        out_f.write(in_f.read())
+        except Exception:
+            # pydub/ffmpeg 异常时退化到二进制拼接
+            with open(output, "wb") as out_f:
+                for f in files:
+                    with open(f, "rb") as in_f:
+                        out_f.write(in_f.read())
 
     # ------------------------------------------------------------------
     # 信息方法

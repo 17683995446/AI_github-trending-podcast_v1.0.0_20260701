@@ -32,9 +32,16 @@ from .utils import (
 BASE_DIR = Path(__file__).parent.parent.parent.resolve()
 OUTPUT_DIR = BASE_DIR  # 输出目录默认在项目根下
 
-# GitHub 仓库文件树/文件内容缓存（避免重复请求 GitHub API，借鉴 CodeFlow/Greptile）
-_FILETREE_CACHE: dict[str, dict] = {}
-_FILE_CONTENT_CACHE: dict[str, dict] = {}
+# GitHub 仓库文件树/文件内容缓存（TTL 自动过期，LRU 淘汰）
+# 文件树缓存 30 分钟过期（最大 50 条），文件内容缓存 10 分钟过期（最大 200 条）
+try:
+    from cachetools import TTLCache
+    _FILETREE_CACHE: TTLCache = TTLCache(maxsize=50, ttl=1800)
+    _FILE_CONTENT_CACHE: TTLCache = TTLCache(maxsize=200, ttl=600)
+except ImportError:
+    # cachetools 不可用时退化到普通字典
+    _FILETREE_CACHE: dict = {}
+    _FILE_CONTENT_CACHE: dict = {}
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -85,6 +92,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_api_run(urllib.parse.parse_qs(parsed.query))
         elif path == "/api/status":
             self._serve_api_status()
+        elif path == "/api/events":
+            self._serve_sse_events()
         elif path == "/api/filetree":
             self._serve_api_filetree(urllib.parse.parse_qs(parsed.query))
         elif path == "/api/file":
@@ -362,6 +371,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "last_error": getattr(self.server, "last_error", None),
         })
 
+    def _serve_sse_events(self):
+        """GET /api/events —— Server-Sent Events 实时进度推送。
+
+        Phase 5: 替代前端 setTimeout 轮询，实现实时进度推送。
+        客户端通过 EventSource 连接此端点，接收任务进度事件。
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        import time
+        last_status = None
+        try:
+            while True:
+                running = getattr(self.server, "pipeline_running", False)
+                last_result = getattr(self.server, "last_result", None)
+                last_error = getattr(self.server, "last_error", None)
+
+                current_status = {
+                    "running": running,
+                    "last_result": last_result,
+                    "last_error": last_error,
+                }
+
+                # 状态变化时推送
+                if current_status != last_status:
+                    event_data = json.dumps(current_status, ensure_ascii=False)
+                    self.wfile.write(f"data: {event_data}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                    last_status = current_status.copy()
+
+                # 心跳保活（每 15 秒）
+                self.wfile.write(b": heartbeat\n\n")
+                self.wfile.flush()
+                time.sleep(2)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # 客户端断开连接
+        except Exception:
+            pass
+
     def _start_pipeline(self, params: dict):
         """启动后台流水线任务"""
         if getattr(self.server, "pipeline_running", False):
@@ -561,10 +613,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         })
 
     def _handle_ask(self, params: dict):
-        """处理项目问答：基于项目文档调用 LLM 回答用户问题（DeepWiki 式交互）"""
-        import urllib.request
-        import urllib.error
+        """处理项目问答：基于项目文档调用 LLM 回答用户问题（DeepWiki 式交互）
 
+        统一使用 LLMEnhancer 调用 LLM，消除与 urllib 手写调用的代码重复。
+        """
         question = (params.get("question") or "").strip()
         dir_name = params.get("dir") or ""
         proj_name = params.get("project") or ""
@@ -612,50 +664,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         context = "\n\n".join(context_parts)
 
-        # 调用硅基流动 LLM API（OpenAI 兼容接口）
+        # 统一使用 LLMEnhancer 调用 LLM（复用 openai 库，消除 urllib 重复代码）
         try:
-            from gh_trending_audio.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+            from gh_trending_audio.config import LLM_API_KEY
 
             if not LLM_API_KEY:
-                self._send_json(500, {"error": "LLM API Key 未配置，请在 config.py 中设置 LLM_API_KEY"})
+                self._send_json(500, {"error": "LLM API Key 未配置，请在 .env 文件中设置 LLM_API_KEY"})
                 return
 
+            from openai import OpenAI
+            from gh_trending_audio.config import LLM_BASE_URL, LLM_MODEL
+
+            client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
             system_prompt = "你是项目技术助手，基于以下项目文档回答用户问题。用中文回答，简洁专业。"
             user_prompt = f"项目上下文：\n{context}\n\n用户问题：{question}"
 
-            payload = json.dumps({
-                "model": LLM_MODEL,
-                "messages": [
+            response = client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "temperature": 0.4,
-                "max_tokens": 1500,
-            }, ensure_ascii=False).encode("utf-8")
-
-            url = LLM_BASE_URL.rstrip("/") + "/chat/completions"
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                headers={
-                    "Authorization": f"Bearer {LLM_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
+                temperature=0.4,
+                max_tokens=1500,
             )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-            answer = result["choices"][0]["message"]["content"].strip()
+            answer = response.choices[0].message.content.strip()
             self._send_json(200, {"answer": answer})
-        except urllib.error.HTTPError as e:
-            err_body = ""
-            try:
-                err_body = e.read().decode("utf-8", errors="replace")
-            except Exception:
-                pass
-            self._send_json(502, {"error": f"LLM API 请求失败 ({e.code}): {err_body[:200]}"})
+        except ImportError:
+            self._send_json(500, {"error": "openai 库未安装，请运行 pip install openai"})
         except Exception as e:
-            self._send_json(500, {"error": f"调用 LLM 失败: {e}"})
+            err_msg = str(e)[:300]
+            self._send_json(500, {"error": f"调用 LLM 失败: {err_msg}"})
 
     def _handle_onboarding(self, params: dict):
         """生成受众定制的新手入门指南（借鉴 Zread.ai 受众定制化入门指南）
@@ -728,8 +767,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _serve_api_readme(self, params):
         """GET /api/readme?repo=owner/repo —— 返回仓库 README 原文
 
-        调用 GitHub API 获取 README，支持多种文件名（README.md, README.rst 等）。
-        结果缓存。
+        使用 GitHubClient（PyGithub 封装）获取 README，结果缓存。
         """
         repo = (params.get("repo", [""])[0] or "").strip()
         if not repo or "/" not in repo:
@@ -741,49 +779,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(200, _FILE_CONTENT_CACHE[cache_key])
             return
 
-        # GitHub API: GET /repos/{owner}/{repo}/readme 返回 base64 编码的 README
-        url = f"https://api.github.com/repos/{repo}/readme"
-        status, data = github_api_get(url)
-        if status != 200 or not isinstance(data, dict):
-            err = data if isinstance(data, str) else "未知错误"
-            self._send_json(502, {"error": f"获取 README 失败 ({status}): {err[:200]}"})
-            return
+        try:
+            from gh_trending_audio.github_client import get_github_client
+            client = get_github_client()
+            readme_text, readme_path, html_url = client.get_readme(repo)
 
-        import base64
-        content_b64 = data.get("content", "")
-        encoding = data.get("encoding", "base64")
-        readme_path = data.get("path", "README.md")
-        html_url = data.get("html_url", "")
+            # 限制大小（200KB）
+            if len(readme_text) > 204800:
+                readme_text = readme_text[:204800] + "\n\n... (README 已截断，完整内容请访问 GitHub)"
 
-        if encoding == "base64":
-            try:
-                readme_text = base64.b64decode(content_b64).decode("utf-8", errors="replace")
-            except Exception:
-                readme_text = ""
-        else:
-            readme_text = content_b64
-
-        # 限制大小（200KB）
-        if len(readme_text) > 204800:
-            readme_text = readme_text[:204800] + "\n\n... (README 已截断，完整内容请访问 GitHub)"
-
-        result = {
-            "repo": repo,
-            "path": readme_path,
-            "content": readme_text,
-            "html_url": html_url,
-            "size": len(readme_text),
-        }
-        _FILE_CONTENT_CACHE[cache_key] = result
-        self._send_json(200, result)
+            result = {
+                "repo": repo,
+                "path": readme_path,
+                "content": readme_text,
+                "html_url": html_url,
+                "size": len(readme_text),
+            }
+            _FILE_CONTENT_CACHE[cache_key] = result
+            self._send_json(200, result)
+        except Exception as e:
+            self._send_json(502, {"error": f"获取 README 失败: {str(e)[:200]}"})
 
     def _serve_api_filetree(self, params):
         """GET /api/filetree?repo=owner/repo —— 返回仓库递归文件树
 
-        调用 GitHub API：
-          1. GET /repos/{owner}/{repo} 获取默认分支
-          2. GET /repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1
-        结果缓存，避免重复请求。
+        使用 GitHubClient（PyGithub 封装）获取文件树，结果缓存。
         """
         repo = (params.get("repo", [""])[0] or "").strip()
         if not repo or "/" not in repo:
@@ -795,42 +815,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(200, _FILETREE_CACHE[cache_key])
             return
 
-        # 1. 获取默认分支
-        status, repo_info = github_api_get(
-            f"https://api.github.com/repos/{repo}"
-        )
-        if status != 200 or not isinstance(repo_info, dict):
-            err = repo_info if isinstance(repo_info, str) else "未知错误"
-            self._send_json(502, {"error": f"获取仓库信息失败 ({status}): {err[:200]}"})
-            return
-        default_branch = repo_info.get("default_branch") or "main"
+        try:
+            from gh_trending_audio.github_client import get_github_client
+            client = get_github_client()
+            files, truncated = client.get_file_tree(repo)
 
-        # 2. 获取递归文件树
-        status, tree_data = github_api_get(
-            f"https://api.github.com/repos/{repo}/git/trees/{default_branch}?recursive=1"
-        )
-        if status != 200 or not isinstance(tree_data, dict):
-            err = tree_data if isinstance(tree_data, str) else "未知错误"
-            self._send_json(502, {"error": f"获取文件树失败 ({status}): {err[:200]}"})
-            return
-
-        result = {
-            "repo": repo,
-            "default_branch": default_branch,
-            "tree": tree_data.get("tree", []),
-            "truncated": tree_data.get("truncated", False),
-        }
-        _FILETREE_CACHE[cache_key] = result
-        self._send_json(200, result)
+            result = {
+                "repo": repo,
+                "default_branch": "",  # GitHubClient 内部处理
+                "tree": [
+                    {"path": f.path, "type": f.type, "size": f.size}
+                    for f in files
+                ],
+                "truncated": truncated,
+            }
+            _FILETREE_CACHE[cache_key] = result
+            self._send_json(200, result)
+        except Exception as e:
+            self._send_json(502, {"error": f"获取文件树失败: {str(e)[:200]}"})
 
     def _serve_api_file(self, params):
         """GET /api/file?repo=owner/repo&path=src/main.py —— 返回文件内容
 
-        调用 GitHub API GET /repos/{owner}/{repo}/contents/{path}，
-        将 base64 内容解码后返回；限制 100KB 以内；结果缓存。
+        使用 GitHubClient（PyGithub 封装）获取文件内容，限制 100KB；结果缓存。
         """
-        import base64
-
         repo = (params.get("repo", [""])[0] or "").strip()
         file_path = (params.get("path", [""])[0] or "").strip()
         if not repo or "/" not in repo:
@@ -845,41 +853,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(200, _FILE_CONTENT_CACHE[cache_key])
             return
 
-        encoded_path = urllib.parse.quote(file_path, safe="/")
-        url = f"https://api.github.com/repos/{repo}/contents/{encoded_path}"
-        status, data = github_api_get(url)
-        if status != 200 or not isinstance(data, dict):
-            err = data if isinstance(data, str) else "未知错误"
-            self._send_json(502, {"error": f"获取文件内容失败 ({status}): {err[:200]}"})
-            return
-
-        size = data.get("size", 0)
-        MAX_FILE_SIZE = 100 * 1024  # 100KB
-        if size > MAX_FILE_SIZE:
-            self._send_json(413, {"error": f"文件过大（{size} 字节），限制 100KB 以内"})
-            return
-
-        content_b64 = data.get("content", "") or ""
-        encoding = data.get("encoding", "base64")
         try:
-            if encoding == "base64":
-                content = base64.b64decode(content_b64).decode(
-                    "utf-8", errors="replace"
-                )
-            else:
-                content = content_b64
-        except Exception as e:
-            self._send_json(500, {"error": f"解码文件失败: {e}"})
-            return
+            from gh_trending_audio.github_client import get_github_client
+            client = get_github_client()
+            content = client.get_file_content(repo, file_path, max_size=102400)
 
-        result = {
-            "path": file_path,
-            "size": size,
-            "content": content,
-            "encoding": "utf-8",
-        }
-        _FILE_CONTENT_CACHE[cache_key] = result
-        self._send_json(200, result)
+            result = {
+                "path": file_path,
+                "size": len(content),
+                "content": content,
+                "encoding": "utf-8",
+            }
+            _FILE_CONTENT_CACHE[cache_key] = result
+            self._send_json(200, result)
+        except Exception as e:
+            err_msg = str(e)[:200]
+            if "413" in err_msg or "too large" in err_msg.lower():
+                self._send_json(413, {"error": f"文件过大，限制 100KB 以内"})
+            else:
+                self._send_json(502, {"error": f"获取文件内容失败: {err_msg}"})
 
     # ------------------------------------------------------------------
     # 社区洞察（借鉴 Zread.ai 的社区讨论摘要能力）
@@ -888,127 +880,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _serve_api_community(self, params):
         """GET /api/community?repo=owner/repo —— 社区洞察
 
-        并行调用以下 GitHub API，汇总仓库的社区活跃度信息：
-          1. GET /repos/{owner}/{repo}/issues?state=open&per_page=10&sort=comments
-             → 热门 issues（按评论数排序，过滤掉 PR）
-          2. GET /repos/{owner}/{repo}/pulls?state=open&per_page=5&sort=updated
-             → 活跃 PRs
-          3. GET /repos/{owner}/{repo}/contributors?per_page=5
-             → 核心贡献者
-          4. GET /repos/{owner}/{repo}/releases?per_page=3
-             → 最新版本
-          5. GET /repos/{owner}/{repo}
-             → 基本信息（stars/forks/open_issues/topics/created_at/pushed_at）
-
-        使用 config.py 中的 GITHUB_TOKEN（若有）提高配额（由 github_api_get 统一注入）。
-        错误处理：某个 API 失败时，对应字段返回空数组/空对象，不影响其他字段。
+        使用 GitHubClient（PyGithub 封装）并行获取社区数据。
+        某个 API 失败时，对应字段返回空数组/空对象，不影响其他字段。
         """
         repo = (params.get("repo", [""])[0] or "").strip()
         if not repo or "/" not in repo:
             self._send_json(400, {"error": "缺少 repo 参数（格式：owner/repo）"})
             return
 
-        base = f"https://api.github.com/repos/{repo}"
+        try:
+            from gh_trending_audio.github_client import get_github_client
+            client = get_github_client()
+            data = client.get_community_data(repo, max_items=5)
 
-        results: dict = {
-            "repo_info": {},
-            "hot_issues": [],
-            "active_prs": [],
-            "contributors": [],
-            "releases": [],
-        }
-
-        def fetch_issues():
-            status, data = github_api_get(
-                f"{base}/issues?state=open&per_page=10&sort=comments"
-            )
-            if status == 200 and isinstance(data, list):
-                items = []
-                for it in data:
-                    # GitHub issues 端点会同时返回 PR，过滤掉纯 PR（避免与 active_prs 重复）
-                    if it.get("pull_request"):
-                        continue
-                    labels = [lb.get("name", "") for lb in (it.get("labels") or [])]
-                    items.append({
-                        "number": it.get("number"),
-                        "title": it.get("title", ""),
-                        "comments": it.get("comments", 0),
-                        "url": it.get("html_url", ""),
-                        "labels": labels,
-                    })
-                results["hot_issues"] = items
-
-        def fetch_prs():
-            status, data = github_api_get(
-                f"{base}/pulls?state=open&per_page=5&sort=updated"
-            )
-            if status == 200 and isinstance(data, list):
-                items = []
-                for pr in data:
-                    user = (pr.get("user") or {}).get("login", "")
-                    items.append({
-                        "number": pr.get("number"),
-                        "title": pr.get("title", ""),
-                        "user": user,
-                        "url": pr.get("html_url", ""),
-                    })
-                results["active_prs"] = items
-
-        def fetch_contributors():
-            status, data = github_api_get(
-                f"{base}/contributors?per_page=5"
-            )
-            if status == 200 and isinstance(data, list):
-                items = []
-                for c in data:
-                    items.append({
-                        "login": c.get("login", ""),
-                        "contributions": c.get("contributions", 0),
-                        "avatar_url": c.get("avatar_url", ""),
-                    })
-                results["contributors"] = items
-
-        def fetch_releases():
-            status, data = github_api_get(
-                f"{base}/releases?per_page=3"
-            )
-            if status == 200 and isinstance(data, list):
-                items = []
-                for r in data:
-                    items.append({
-                        "tag": r.get("tag_name", ""),
-                        "name": r.get("name", ""),
-                        "published_at": r.get("published_at", ""),
-                        "url": r.get("html_url", ""),
-                    })
-                results["releases"] = items
-
-        def fetch_repo_info():
-            status, data = github_api_get(base)
-            if status == 200 and isinstance(data, dict):
-                results["repo_info"] = {
-                    "stars": data.get("stargazers_count", 0),
-                    "forks": data.get("forks_count", 0),
-                    "open_issues": data.get("open_issues_count", 0),
-                    "topics": data.get("topics", []) or [],
-                    "created_at": data.get("created_at", ""),
-                    "pushed_at": data.get("pushed_at", ""),
-                }
-
-        # 并行请求以加速（每个线程写入不同 key，互不冲突）
-        threads = [
-            threading.Thread(target=fetch_issues),
-            threading.Thread(target=fetch_prs),
-            threading.Thread(target=fetch_contributors),
-            threading.Thread(target=fetch_releases),
-            threading.Thread(target=fetch_repo_info),
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=25)
-
-        self._send_json(200, results)
+            results = {
+                "repo_info": data.repo_info,
+                "hot_issues": data.open_issues,
+                "active_prs": data.open_pulls,
+                "contributors": data.contributors,
+                "releases": data.releases,
+            }
+            self._send_json(200, results)
+        except Exception as e:
+            self._send_json(502, {"error": f"获取社区数据失败: {str(e)[:200]}"})
 
     # ------------------------------------------------------------------
     # 语义代码搜索（借鉴 Greptile 的自然语言代码搜索能力）
@@ -1092,9 +986,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _serve_file(self, filepath: str):
         """提供文件下载/预览"""
-        # 安全检查：防止路径穿越
-        safe_path = filepath.replace("..", "").replace("\\", "/")
-        full_path = OUTPUT_DIR / safe_path
+        # 安全检查：使用 pathlib.resolve 防止路径穿越
+        from pathlib import Path
+        safe_path = Path(filepath)
+        full_path = (OUTPUT_DIR / safe_path).resolve()
+        # 确保解析后的路径仍在 OUTPUT_DIR 内
+        try:
+            full_path.relative_to(OUTPUT_DIR.resolve())
+        except ValueError:
+            self._send_json(403, {"error": "Access denied: path traversal detected"})
+            return
 
         if not full_path.exists() or not full_path.is_file():
             self._send_json(404, {"error": "File not found"})

@@ -3,17 +3,23 @@ config.py —— 集中配置管理
 
 所有配置优先从环境变量读取，环境变量未设置时使用此处的默认值。
 修改默认值后无需再手动设置环境变量。
+
+安全提示：敏感信息（API Key、Token）请通过 .env 文件或环境变量设置，
+切勿硬编码在源码中。
 """
 
 import os
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # 从 .env 文件加载环境变量
+except ImportError:
+    pass  # python-dotenv 未安装时退化到纯环境变量
+
 # ── LLM 配置（硅基流动 SiliconFlow）──────────────────────────────
 # 硅基流动提供 9B 以下模型永久免费：https://siliconflow.cn
-# 以下 API Key 为演示用，请替换为您自己的 Key
-LLM_API_KEY = os.environ.get(
-    "LLM_API_KEY",
-    "sk-uqelhavcdhfxjzjesdenxpbtqombamjniazzjtbssmdcwdvg"
-)
+# 请在 .env 文件中设置 LLM_API_KEY=sk-xxxx
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_BASE_URL = os.environ.get(
     "LLM_BASE_URL",
     "https://api.siliconflow.cn/v1"
