@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "gh-trending-audio"
+version = "1.0.0"
+description = "GitHub Trending → 双人对话播客自动生成工具"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31.0",
+    "markdown>=3.5",
+    "beautifulsoup4>=4.12.0",
+    "rich>=13.7.0",
+]
+
+[project.optional-dependencies]
+llm = ["openai>=1.10.0"]
+tts = ["edge-tts>=7.2.0"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0",
+]
+
+[project.scripts]
+gh-trending-audio = "gh_trending_audio.cli:main"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["gh_trending_audio"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[tool.setuptools.packages.find]
+include = ["gh_trending_audio*"]

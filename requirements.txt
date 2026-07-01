@@ -1,0 +1,9 @@
+# 核心依赖
+edge-tts>=7.2.0          # 微软 Edge 免费 TTS 引擎（零成本、高质量、支持中文）
+requests>=2.31.0          # GitHub API 请求
+markdown>=3.5             # README Markdown 解析
+beautifulsoup4>=4.12.0    # 从 HTML 中提取纯文本
+rich>=13.7.0              # 美观的 CLI 输出
+
+# 可选：LLM 增强（无需安装也能运行，仅在 --use-llm 时需要）
+# openai>=1.10.0
