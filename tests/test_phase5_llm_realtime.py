@@ -26,14 +26,14 @@ class TestMutagenAudioDuration:
         import inspect
         from gh_trending_audio.web.utils import get_audio_duration
         source = inspect.getsource(get_audio_duration)
-        assert "mutagen" in source, "get_audio_duration 应使用 mutagen"
+        assert "mutagen" in source
 
     def test_get_audio_duration_has_fallback(self):
         """get_audio_duration 应保留 ffprobe 作为退化方案。"""
         import inspect
         from gh_trending_audio.web.utils import get_audio_duration
         source = inspect.getsource(get_audio_duration)
-        assert "ffprobe" in source, "get_audio_duration 应保留 ffprobe 退化"
+        assert "ffprobe" in source
 
     def test_get_audio_duration_nonexistent_file(self):
         """不存在的文件应返回 None。"""
@@ -81,8 +81,8 @@ class TestInstructorStructuredOutput:
         os.environ.setdefault("LLM_API_KEY", "sk-test-key-for-unit-tests")
         from gh_trending_audio.llm_enhancer import LLMEnhancer
         source = inspect.getsource(LLMEnhancer.generate_script)
-        assert "instructor" in source, "generate_script 应包含 instructor 集成"
-        assert "PodcastScript" in source, "generate_script 应使用 PodcastScript 模型"
+        assert "instructor" in source
+        assert "PodcastScript" in source
 
     def test_generate_script_has_fallback(self):
         """instructor 失败时应有字符串分割退化方案。"""
@@ -90,36 +90,35 @@ class TestInstructorStructuredOutput:
         os.environ.setdefault("LLM_API_KEY", "sk-test-key-for-unit-tests")
         from gh_trending_audio.llm_enhancer import LLMEnhancer
         source = inspect.getsource(LLMEnhancer.generate_script)
-        assert "===AUDIO===" in source, "generate_script 应保留 ===AUDIO=== 退化"
+        assert "===AUDIO===" in source
 
 
 class TestSSEEndpoint:
-    """SSE 实时进度推送测试。"""
+    """SSE 实时进度推送测试（Phase 1 重构后位于 api_handlers.py）。"""
 
     def test_sse_route_exists(self):
         """/api/events 路由应存在。"""
-        from gh_trending_audio.web.handler import DashboardHandler
-        import inspect
-        source = inspect.getsource(DashboardHandler.do_GET)
-        assert "/api/events" in source, "应有 /api/events 路由"
+        from gh_trending_audio.web.route_table import list_routes
+        routes = list_routes("GET")
+        assert any("/api/events" in r["pattern"] for r in routes), "应有 /api/events 路由"
 
     def test_serve_sse_events_method_exists(self):
-        """_serve_sse_events 方法应存在。"""
-        from gh_trending_audio.web.handler import DashboardHandler
-        assert hasattr(DashboardHandler, '_serve_sse_events'), \
-            "DashboardHandler 应有 _serve_sse_events 方法"
+        """serve_sse_events 函数应存在。"""
+        from gh_trending_audio.web import api_handlers
+        assert hasattr(api_handlers, 'serve_sse_events'), \
+            "api_handlers 应有 serve_sse_events 函数"
 
     def test_sse_sets_content_type(self):
-        """_serve_sse_events 应设置 text/event-stream Content-Type。"""
+        """serve_sse_events 应设置 text/event-stream Content-Type。"""
         import inspect
-        from gh_trending_audio.web.handler import DashboardHandler
-        source = inspect.getsource(DashboardHandler._serve_sse_events)
+        from gh_trending_audio.web import api_handlers
+        source = inspect.getsource(api_handlers.serve_sse_events)
         assert "text/event-stream" in source, \
-            "_serve_sse_events 应设置 text/event-stream Content-Type"
+            "serve_sse_events 应设置 text/event-stream Content-Type"
 
     def test_sse_has_heartbeat(self):
-        """_serve_sse_events 应有心跳保活机制。"""
+        """serve_sse_events 应有心跳保活机制。"""
         import inspect
-        from gh_trending_audio.web.handler import DashboardHandler
-        source = inspect.getsource(DashboardHandler._serve_sse_events)
-        assert "heartbeat" in source, "SSE 应有心跳保活"
+        from gh_trending_audio.web import api_handlers
+        source = inspect.getsource(api_handlers.serve_sse_events)
+        assert "heartbeat" in source

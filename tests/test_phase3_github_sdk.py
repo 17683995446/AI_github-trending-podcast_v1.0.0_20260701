@@ -69,46 +69,44 @@ class TestDataclasses:
 
 
 class TestHandlerUsesGitHubClient:
-    """handler.py 端点应使用 GitHubClient 而非手写 REST。"""
+    """Web 层端点应使用 GitHubClient 而非手写 REST（Phase 1 重构后位于 api_handlers.py）。"""
 
     def test_readme_uses_client(self):
-        """_serve_api_readme 源码应使用 get_github_client。"""
+        """serve_api_readme 源码应使用 get_github_client。"""
         import inspect
-        from gh_trending_audio.web.handler import DashboardHandler
-        source = inspect.getsource(DashboardHandler._serve_api_readme)
+        from gh_trending_audio.web import api_handlers
+        source = inspect.getsource(api_handlers.serve_api_readme)
         assert "get_github_client" in source
         assert "github_api_get" not in source or "get_github_client" in source
 
     def test_filetree_uses_client(self):
-        """_serve_api_filetree 源码应使用 get_github_client。"""
+        """serve_api_filetree 源码应使用 get_github_client。"""
         import inspect
-        from gh_trending_audio.web.handler import DashboardHandler
-        source = inspect.getsource(DashboardHandler._serve_api_filetree)
+        from gh_trending_audio.web import api_handlers
+        source = inspect.getsource(api_handlers.serve_api_filetree)
         assert "get_github_client" in source
-        # 不应再手动拼接 URL
         assert "api.github.com/repos" not in source
 
     def test_file_uses_client(self):
-        """_serve_api_file 源码应使用 get_github_client。"""
+        """serve_api_file 源码应使用 get_github_client。"""
         import inspect
-        from gh_trending_audio.web.handler import DashboardHandler
-        source = inspect.getsource(DashboardHandler._serve_api_file)
+        from gh_trending_audio.web import api_handlers
+        source = inspect.getsource(api_handlers.serve_api_file)
         assert "get_github_client" in source
         assert "api.github.com/repos" not in source
 
     def test_community_uses_client(self):
-        """_serve_api_community 源码应使用 get_github_client。"""
+        """serve_api_community 源码应使用 get_github_client。"""
         import inspect
-        from gh_trending_audio.web.handler import DashboardHandler
-        source = inspect.getsource(DashboardHandler._serve_api_community)
+        from gh_trending_audio.web import api_handlers
+        source = inspect.getsource(api_handlers.serve_api_community)
         assert "get_github_client" in source
-        # 不应再手动拼接 URL
         assert "api.github.com/repos" not in source
 
     def test_no_base64_in_handler(self):
-        """handler 端点不应再手动 base64 解码。"""
+        """Web 层端点不应再手动 base64 解码。"""
         import inspect
-        from gh_trending_audio.web.handler import DashboardHandler
-        for method_name in ['_serve_api_readme', '_serve_api_filetree', '_serve_api_file', '_serve_api_community']:
-            source = inspect.getsource(getattr(DashboardHandler, method_name))
-            assert "base64" not in source, f"{method_name} 不应包含 base64 操作"
+        from gh_trending_audio.web import api_handlers
+        for func_name in ['serve_api_readme', 'serve_api_filetree', 'serve_api_file', 'serve_api_community']:
+            source = inspect.getsource(getattr(api_handlers, func_name))
+            assert "base64" not in source, f"{func_name} 不应包含 base64 操作"

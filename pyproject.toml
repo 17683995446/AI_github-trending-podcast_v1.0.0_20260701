@@ -10,20 +10,32 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = [
-    "requests>=2.31.0",
-    "markdown>=3.5",
-    "beautifulsoup4>=4.12.0",
-    "rich>=13.7.0",
+    "requests>=2.31.0,<3.0",
+    "markdown>=3.5,<4.0",
+    "beautifulsoup4>=4.12.0,<5.0",
+    "rich>=13.7.0,<15.0",
+    "python-dotenv>=1.0.0,<2.0",
+    "cachetools>=5.3.0,<8.0",
+    "Jinja2>=3.1.0,<4.0",
+    "pymdown-extensions>=10.0,<12.0",
+    "mutagen>=1.47.0,<2.0",
+    "pydantic>=2.0.0,<3.0",
+    "feedgen>=1.0.0,<2.0",
+    "fpdf2>=2.7.0,<3.0",
+    "ebooklib>=0.18,<1.0",
+    "ollama>=0.4.0,<1.0",
+    "tree-sitter-languages>=1.10,<2.0",
 ]
 
 [project.optional-dependencies]
-llm = ["openai>=1.10.0"]
-tts = ["edge-tts>=7.2.0"]
+llm = ["openai>=1.10.0,<3.0", "instructor>=1.0.0,<2.0"]
+tts = ["edge-tts>=7.2.0,<8.0", "pydub>=0.25.1,<1.0"]
+github = ["PyGithub>=2.0.0,<3.0"]
 dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "ruff>=0.1.0",
-    "mypy>=1.0",
+    "pytest>=7.0,<9.0",
+    "pytest-cov>=4.0,<8.0",
+    "ruff>=0.1.0,<1.0",
+    "mypy>=1.0,<2.0",
 ]
 
 [project.scripts]
@@ -34,20 +46,51 @@ line-length = 120
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B"]
-ignore = ["E501", "B008"]
+select = ["E", "F", "W", "I", "UP", "B", "ANN", "D", "SIM", "RET"]
+ignore = ["E501", "B008", "D100", "D101", "D102", "D103", "D104", "D105", "D107", "ANN401"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["gh_trending_audio"]
 
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"
+markers = [
+    "unit: 单元测试（单个函数/类，无外部依赖）",
+    "integration: 集成测试（多模块协作，可能需要文件系统）",
+    "system: 系统测试（端到端，需要运行中的服务器）",
+    "slow: 标记运行较慢的测试",
+]
+
+[tool.coverage.run]
+source = ["gh_trending_audio"]
+omit = [
+    "*/tests/*",
+    "*/__init__.py",
+    "*/web/templates.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+fail_under = 60
 
 [tool.mypy]
 python_version = "3.10"
 ignore_missing_imports = true
 warn_unused_ignores = true
+warn_return_any = true
+warn_redundant_casts = true
+disallow_untyped_defs = false
+check_untyped_defs = true
 
 [tool.setuptools.packages.find]
 include = ["gh_trending_audio*"]

@@ -12,49 +12,25 @@
 from __future__ import annotations
 
 import base64
-import logging
-from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any
 
-logger = logging.getLogger(__name__)
+from .logging_config import get_logger
+from .models import CommunityData, FileInfo, RepoSummary
+from .constants import (
+    GITHUB_API_URL,
+    GITHUB_CLIENT_REPO_TIMEOUT,
+    GITHUB_TREE_TIMEOUT,
+    GITHUB_INSIGHTS_TIMEOUT,
+    COMMUNITY_INSIGHTS_MAX_ITEMS,
+)
 
-
-@dataclass
-class FileInfo:
-    """文件树节点。"""
-    path: str
-    type: str  # "blob" | "tree"
-    size: int = 0
-
-
-@dataclass
-class RepoSummary:
-    """仓库基本信息。"""
-    full_name: str
-    description: str = ""
-    stars: int = 0
-    forks: int = 0
-    language: str = ""
-    license_name: str = ""
-    topics: list[str] = field(default_factory=list)
-    default_branch: str = "main"
-    html_url: str = ""
-
-
-@dataclass
-class CommunityData:
-    """社区洞察数据。"""
-    open_issues: list[dict] = field(default_factory=list)
-    open_pulls: list[dict] = field(default_factory=list)
-    contributors: list[dict] = field(default_factory=list)
-    releases: list[dict] = field(default_factory=list)
-    repo_info: dict = field(default_factory=dict)
+logger = get_logger(__name__)
 
 
 class GitHubClient:
     """GitHub API 客户端，优先使用 PyGithub，退化到 requests。"""
 
-    def __init__(self, token: str = ""):
+    def __init__(self, token: str = "") -> None:
         self._token = token
         self._pygithub_repo_cache: dict = {}
         try:
@@ -82,7 +58,7 @@ class GitHubClient:
     def uses_pygithub(self) -> bool:
         return self._use_pygithub
 
-    def _get_repo(self, repo_full: str):
+    def _get_repo(self, repo_full: str) -> Any:
         """获取 PyGithub Repository 对象（带缓存）。"""
         if repo_full not in self._pygithub_repo_cache:
             self._pygithub_repo_cache[repo_full] = self._gh.get_repo(repo_full)
@@ -110,7 +86,7 @@ class GitHubClient:
             )
         else:
             resp = self._session.get(
-                f"https://api.github.com/repos/{repo_full}", timeout=15
+                f"{GITHUB_API_URL}/repos/{repo_full}", timeout=GITHUB_CLIENT_REPO_TIMEOUT
             )
             resp.raise_for_status()
             data = resp.json()
@@ -142,7 +118,7 @@ class GitHubClient:
             return content, readme.path, readme.html_url
         else:
             resp = self._session.get(
-                f"https://api.github.com/repos/{repo_full}/readme", timeout=15
+                f"{GITHUB_API_URL}/repos/{repo_full}/readme", timeout=GITHUB_CLIENT_REPO_TIMEOUT
             )
             resp.raise_for_status()
             data = resp.json()
@@ -169,8 +145,8 @@ class GitHubClient:
             # 先获取默认分支
             repo_info = self.get_repo_info(repo_full)
             resp = self._session.get(
-                f"https://api.github.com/repos/{repo_full}/git/trees/{repo_info.default_branch}?recursive=1",
-                timeout=30,
+                f"{GITHUB_API_URL}/repos/{repo_full}/git/trees/{repo_info.default_branch}?recursive=1",
+                timeout=GITHUB_TREE_TIMEOUT,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -198,18 +174,18 @@ class GitHubClient:
             else:
                 text = content_file.content or ""
             if len(text) > max_size:
-                text = text[:max_size] + f"\n\n... (文件已截断，完整内容请访问 GitHub)"
+                text = text[:max_size] + "\n\n... (文件已截断，完整内容请访问 GitHub)"
             return text
         else:
             resp = self._session.get(
-                f"https://api.github.com/repos/{repo_full}/contents/{file_path}",
-                timeout=15,
+                f"{GITHUB_API_URL}/repos/{repo_full}/contents/{file_path}",
+                timeout=GITHUB_CLIENT_REPO_TIMEOUT,
             )
             resp.raise_for_status()
             data = resp.json()
             content = base64.b64decode(data.get("content", "")).decode("utf-8", errors="replace")
             if len(content) > max_size:
-                content = content[:max_size] + f"\n\n... (文件已截断，完整内容请访问 GitHub)"
+                content = content[:max_size] + "\n\n... (文件已截断，完整内容请访问 GitHub)"
             return content
 
     # ── 社区洞察 ──────────────────────────────────────────────
@@ -299,30 +275,31 @@ class GitHubClient:
             # requests 退化模式
             data = CommunityData()
             endpoints = {
-                "issues": f"https://api.github.com/repos/{repo_full}/issues?state=open&sort=comments&direction=desc&per_page={max_items}",
-                "pulls": f"https://api.github.com/repos/{repo_full}/pulls?state=open&sort=created&direction=desc&per_page={max_items}",
-                "contributors": f"https://api.github.com/repos/{repo_full}/contributors?per_page={max_items}",
-                "releases": f"https://api.github.com/repos/{repo_full}/releases?per_page={max_items}",
-                "repo_info": f"https://api.github.com/repos/{repo_full}",
+                "issues": f"{GITHUB_API_URL}/repos/{repo_full}/issues?state=open&sort=comments&direction=desc&per_page={max_items}",
+                "pulls": f"{GITHUB_API_URL}/repos/{repo_full}/pulls?state=open&sort=created&direction=desc&per_page={max_items}",
+                "contributors": f"{GITHUB_API_URL}/repos/{repo_full}/contributors?per_page={max_items}",
+                "releases": f"{GITHUB_API_URL}/repos/{repo_full}/releases?per_page={max_items}",
+                "repo_info": f"{GITHUB_API_URL}/repos/{repo_full}",
             }
             results = {}
             import threading
             threads = []
             for key, url in endpoints.items():
                 def fetch(k=key, u=url):
+                    default = {} if k == "repo_info" else []
                     try:
-                        r = self._session.get(u, timeout=15)
+                        r = self._session.get(u, timeout=GITHUB_CLIENT_REPO_TIMEOUT)
                         if r.status_code == 200:
                             results[k] = r.json()
                         else:
-                            results[k] = []
+                            results[k] = default
                     except Exception:
-                        results[k] = []
+                        results[k] = default
                 t = threading.Thread(target=fetch)
                 threads.append(t)
                 t.start()
             for t in threads:
-                t.join(timeout=20)
+                t.join(timeout=GITHUB_INSIGHTS_TIMEOUT)
 
             data.open_issues = [
                 {"title": i.get("title", ""), "number": i.get("number", 0),
@@ -349,6 +326,8 @@ class GitHubClient:
                 for r in results.get("releases", [])
             ][:max_items]
             ri = results.get("repo_info", {})
+            if not isinstance(ri, dict):
+                ri = {}
             data.repo_info = {
                 "stars": ri.get("stargazers_count", 0),
                 "forks": ri.get("forks_count", 0),
@@ -361,7 +340,7 @@ class GitHubClient:
 
 # ── 模块级单例 ──────────────────────────────────────────────
 
-_client: Optional[GitHubClient] = None
+_client: GitHubClient | None = None
 
 
 def get_github_client() -> GitHubClient:

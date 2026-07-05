@@ -13,9 +13,6 @@ import inspect
 import pytest
 from unittest.mock import patch
 
-# 确保测试环境有 API Key（不影响逻辑，仅避免初始化报错）
-os.environ.setdefault("LLM_API_KEY", "sk-test-key-for-unit-tests")
-
 
 # ── 测试辅助 ──
 
@@ -65,6 +62,10 @@ class TestJinja2TemplateRendering:
 
     def test_render_jinja2_returns_string(self):
         """_render_jinja2 应返回渲染后的字符串。"""
+        try:
+            import jinja2  # noqa: F401
+        except ImportError:
+            pytest.skip("Jinja2 未安装")
         from gh_trending_audio.document_generator import DocumentGenerator
         repo = _make_repo()
         result = DocumentGenerator._render_jinja2(
@@ -253,9 +254,9 @@ class TestFuseJsIntegration:
         assert "fuse.js" in DASHBOARD_HTML.lower(), "应引用 Fuse.js"
 
     def test_fuse_search_in_render_projects(self):
-        """renderProjects 函数应使用 fuse.search。"""
+        """renderProjects 函数应使用 Fuse 搜索（缓存实例后用 _fuseInstance.search）。"""
         from gh_trending_audio.web.templates import DASHBOARD_HTML
-        assert "fuse.search" in DASHBOARD_HTML, "应调用 fuse.search"
+        assert ".search(search)" in DASHBOARD_HTML, "应调用 Fuse 实例的 search 方法"
 
     def test_fuse_has_fallback(self):
         """Fuse.js 不可用时应有退化方案。"""
@@ -269,21 +270,41 @@ class TestFuseJsIntegration:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 4. lucide-icons 图标集成
+# 4. 依赖清理（lucide 死依赖已移除）
 # ═══════════════════════════════════════════════════════════════════
 
 class TestLucideIconsIntegration:
-    """lucide-icons 图标集成测试。"""
+    """lucide-icons 集成验证（UI 优化：使用 Lucide SVG 图标替代 Emoji）。"""
 
     def test_lucide_cdn_in_dashboard(self):
-        """DASHBOARD_HTML 应包含 lucide CDN 引用。"""
+        """DASHBOARD_HTML 应包含 lucide CDN 引用（活跃使用中）。"""
         from gh_trending_audio.web.templates import DASHBOARD_HTML
-        assert "lucide" in DASHBOARD_HTML.lower(), "应引用 lucide-icons"
+        assert "lucide" in DASHBOARD_HTML.lower(), "lucide CDN 应存在"
+        assert "cdn.jsdelivr.net" in DASHBOARD_HTML, "应使用 jsdelivr CDN"
 
     def test_lucide_script_tag(self):
-        """lucide 应以 <script> 标签引入。"""
+        """DASHBOARD_HTML 应包含 lucide.createIcons() 调用。"""
         from gh_trending_audio.web.templates import DASHBOARD_HTML
-        assert "unpkg.com/lucide" in DASHBOARD_HTML, "应从 unpkg 加载 lucide"
+        assert "createIcons" in DASHBOARD_HTML, "应调用 createIcons()"
+        assert "data-lucide" in DASHBOARD_HTML, "应使用 data-lucide 属性"
+
+    def test_lucide_in_player(self):
+        """PLAYER_HTML 应包含 lucide CDN 和 data-lucide 属性。"""
+        from gh_trending_audio.web.templates import PLAYER_HTML
+        assert "lucide" in PLAYER_HTML.lower(), "player 应包含 lucide CDN"
+        assert "data-lucide" in PLAYER_HTML, "player 应使用 data-lucide 属性"
+
+    def test_lucide_in_project(self):
+        """PROJECT_HTML 应包含 lucide CDN 和 data-lucide 属性。"""
+        from gh_trending_audio.web.templates import PROJECT_HTML
+        assert "lucide" in PROJECT_HTML.lower(), "project 应包含 lucide CDN"
+        assert "data-lucide" in PROJECT_HTML, "project 应使用 data-lucide 属性"
+
+    def test_lucide_mutation_observer(self):
+        """所有模板应包含 MutationObserver 自动刷新图标。"""
+        from gh_trending_audio.web.templates import DASHBOARD_HTML, PLAYER_HTML, PROJECT_HTML
+        for name, html in [("dashboard", DASHBOARD_HTML), ("player", PLAYER_HTML), ("project", PROJECT_HTML)]:
+            assert "MutationObserver" in html, f"{name} 应包含 MutationObserver"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -383,8 +404,14 @@ class TestPhase6Integration:
         assert "Jinja2" in content, "requirements.txt 应包含 Jinja2"
 
     def test_all_phase6_dependencies_in_requirements(self):
-        """requirements.txt 应包含 Phase 6 标注。"""
+        """requirements.txt 应包含所有依赖分组且与 pyproject.toml 对齐。"""
         from pathlib import Path
         req_path = Path(__file__).parent.parent / "requirements.txt"
         content = req_path.read_text(encoding="utf-8")
-        assert "Phase 6" in content, "requirements.txt 应有 Phase 6 段落"
+        # 验证依赖分组结构（阶段2规范化后以 pyproject.toml 对齐标注）
+        assert "pyproject.toml" in content, "requirements.txt 应标注与 pyproject.toml 对齐"
+        assert "Jinja2" in content, "requirements.txt 应包含 Jinja2"
+        assert "edge-tts" in content, "requirements.txt 应包含 edge-tts"
+        assert "openai" in content, "requirements.txt 应包含 openai"
+        # 验证版本上限（规范化要求）
+        assert "<3.0" in content or "<4.0" in content, "依赖应有版本上限"

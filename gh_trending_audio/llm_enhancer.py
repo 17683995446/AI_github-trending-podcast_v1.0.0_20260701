@@ -9,7 +9,8 @@ llm_enhancer.py —— 可选的 LLM 增强：生成更生动的播客式脚本
 
 成本控制：
   - 仅处理 README 摘要（限制 token），不发送全文
-  - 使用低成本模型即可（如 deepseek-chat / gpt-4o-mini）
+  - 默认使用硅基流动 GLM-4-9B-0414（9B 以下永久免费）
+  - 也支持 DeepSeek / OpenAI / 通义千问等（OpenAI 兼容接口）
 
 模块拆分说明：
   - 播客风格定义 → gh_trending_audio.styles
@@ -20,9 +21,9 @@ llm_enhancer.py —— 可选的 LLM 增强：生成更生动的播客式脚本
 
 from __future__ import annotations
 
-from rich.console import Console
-
-from .github_fetcher import RepoInfo
+from .exceptions import ConfigError, LLMError
+from .models import RepoInfo
+from .logging_config import get_logger
 from .prompts import (
     comparison_system_prompt,
     comparison_user_prompt,
@@ -31,22 +32,10 @@ from .prompts import (
     system_prompt,
 )
 from .styles import STYLES
+from .models import PodcastScript, _HAS_PYDANTIC
+from .text_postprocess import clean_audio_script
 
-console = Console()
-
-
-# ── Phase 5: 结构化输出模型（instructor + pydantic）──────────────
-try:
-    from pydantic import BaseModel, Field
-
-    class PodcastScript(BaseModel):
-        """LLM 结构化输出：播客文档 + 对话脚本。"""
-        markdown: str = Field(..., description="项目深度解读的 Markdown 文档")
-        audio_script: str = Field(..., description="双人对话脚本，格式 A: / B: 交替")
-
-    _HAS_PYDANTIC = True
-except ImportError:
-    _HAS_PYDANTIC = False
+logger = get_logger(__name__)
 
 
 class LLMEnhancer:
@@ -57,24 +46,47 @@ class LLMEnhancer:
 
     def __init__(self, language: str = "zh", style: str = "dialogue"):
         """
-        从 config.py 读取默认配置（硅基流动），也可通过环境变量覆盖。
+        通过 LLM 后端注册表自动选择可用后端（阶段4: 注册机制）。
+
+        后端优先级：openai（配置了 API Key）→ ollama（本地服务可用）。
+        新增后端只需实现 ``LLMBackend`` 接口并通过 ``register_llm_backend`` 注册。
 
         默认使用硅基流动 SiliconFlow 免费模型：
-          - 模型: Qwen/Qwen2.5-7B-Instruct（9B 以下永久免费）
+          - 模型: THUDM/GLM-4-9B-0414（9B 以下永久免费）
           - 无需自备 OpenAI API Key
         """
-        from .config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+        # 阶段4: 确保内置 LLM 后端已注册（导入触发注册）
+        try:
+            from .llm_backends import OpenAIBackend, OllamaBackend  # noqa: F401
+        except ImportError:
+            pass
+
+        from .registry import get_auto_llm_backend, get_llm_backend
 
         self.language = language
         self.style = style if style in self.STYLES else "dialogue"
+        self._backend = None
+
+        # 尝试通过注册表自动选择后端
+        self._backend = get_auto_llm_backend()
+
+        if self._backend is not None:
+            self.api_key = self._backend.api_key
+            self.base_url = self._backend.base_url
+            self.model = self._backend.model
+            logger.info(f"LLM 后端: {self._backend.name} (模型: {self.model})")
+            return
+
+        # 回退：直接读取 config（兼容旧逻辑）
+        from .config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
         self.api_key = LLM_API_KEY
         self.base_url = LLM_BASE_URL
         self.model = LLM_MODEL
 
         if not self.api_key:
-            raise ValueError(
+            raise ConfigError(
                 "LLM API Key 未配置。请在 gh_trending_audio/config.py 中设置 LLM_API_KEY，"
-                "或设置环境变量 LLM_API_KEY。"
+                "或设置环境变量 LLM_API_KEY。也可安装并启动 Ollama 实现零配置本地推理。"
             )
 
     def generate_script(self, repo: RepoInfo, readme_text: str) -> dict:
@@ -91,14 +103,14 @@ class LLMEnhancer:
         """
         from openai import OpenAI
 
-        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        client = self._backend.get_client() if self._backend else OpenAI(api_key=self.api_key, base_url=self.base_url)
 
         # ── Step 1: 技术分析 ──
-        console.print(f"[dim]调用 LLM ({self.model}) Step 1: 技术分析...[/dim]")
+        logger.debug("调用 LLM (%s) Step 1: 技术分析...", self.model)
         tech_analysis = self._analyze_project(client, repo, readme_text)
 
         # ── Step 2: 生成对话 ──
-        console.print(f"[dim]调用 LLM ({self.model}) Step 2: 生成对话...[/dim]")
+        logger.debug("调用 LLM (%s) Step 2: 生成对话...", self.model)
         sys_prompt = system_prompt(self.style, self.language)
         user_prompt = dialogue_prompt(repo, tech_analysis, self.style, self.language)
 
@@ -140,9 +152,9 @@ class LLMEnhancer:
                 markdown = result.markdown
                 audio_script = result.audio_script
                 used_instructor = True
-                console.print("[dim]  使用 instructor 结构化输出[/dim]")
-            except Exception as e:
-                console.print(f"[dim]  instructor 不可用，退化到字符串解析: {str(e)[:80]}[/dim]")
+                logger.debug("  使用 instructor 结构化输出")
+            except ImportError as e:
+                logger.debug("instructor 不可用，退化到字符串解析: %s", e, exc_info=True)
 
         if not used_instructor:
             # 退化到 ===AUDIO=== 字符串分割
@@ -154,15 +166,15 @@ class LLMEnhancer:
         mermaid_code = self._extract_mermaid(tech_analysis)
         if mermaid_code:
             markdown = self._insert_mermaid_into_md(markdown, mermaid_code)
-            console.print("[dim]  已注入 Mermaid 架构图[/dim]")
+            logger.debug("  已注入 Mermaid 架构图")
         else:
-            # LLM 未生成 Mermaid，使用模板兜底
-            from .document_generator import DocumentGenerator
-            arch_fallback = DocumentGenerator._gen_mermaid_arch(repo, language=self.language)
-            flow_fallback = DocumentGenerator._gen_mermaid_flow(repo, language=self.language)
+            # LLM 未生成 Mermaid，使用模板兜底（Phase 4: 直接调用 mermaid_gen，消除循环依赖）
+            from .mermaid_gen import gen_mermaid_arch, gen_mermaid_flow
+            arch_fallback = gen_mermaid_arch(repo, language=self.language)
+            flow_fallback = gen_mermaid_flow(repo, language=self.language)
             fallback_block = f"\n## 架构图\n\n```mermaid\n{arch_fallback}\n```\n\n## 使用流程\n\n```mermaid\n{flow_fallback}\n```\n"
             markdown += fallback_block
-            console.print("[dim]  LLM 未生成架构图，已注入模板兜底[/dim]")
+            logger.debug("  LLM 未生成架构图，已注入模板兜底")
 
         # 后处理
         audio_script = self._clean_audio_script(audio_script)
@@ -191,12 +203,13 @@ class LLMEnhancer:
         from openai import OpenAI
 
         if not repos:
-            raise ValueError("repos 不能为空，至少需要 2 个项目进行对比")
+            raise LLMError("repos 不能为空，至少需要 2 个项目进行对比")
         if len(repos) < 2:
-            raise ValueError("对比至少需要 2 个项目")
+            raise LLMError("对比至少需要 2 个项目")
         if len(repos) > 3:
-            console.print(
-                f"[yellow]⚠ 对比最多支持 3 个项目，已截取前 3 个（传入 {len(repos)} 个）[/yellow]"
+            logger.warning(
+                "⚠ 对比最多支持 3 个项目，已截取前 3 个（传入 %s 个）",
+                len(repos),
             )
             repos = repos[:3]
             analyses = analyses[:3]
@@ -204,10 +217,11 @@ class LLMEnhancer:
             # 分析不足时补齐空串，保证一一对应
             analyses = list(analyses) + [""] * (len(repos) - len(analyses))
 
-        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        client = self._backend.get_client() if self._backend else OpenAI(api_key=self.api_key, base_url=self.base_url)
 
-        console.print(
-            f"[dim]调用 LLM ({self.model}) 生成 {len(repos)} 个项目的对比分析...[/dim]"
+        logger.debug(
+            "调用 LLM (%s) 生成 %s 个项目的对比分析...",
+            self.model, len(repos),
         )
 
         sys_prompt = comparison_system_prompt(self.style, self.language)
@@ -241,8 +255,9 @@ class LLMEnhancer:
         # 后处理音频脚本
         audio_script = self._clean_audio_script(audio_script)
 
-        console.print(
-            f"[dim]  对比分析完成（文档 {len(markdown)} 字，脚本 {len(audio_script)} 字）[/dim]"
+        logger.debug(
+            "  对比分析完成（文档 %s 字，脚本 %s 字）",
+            len(markdown), len(audio_script),
         )
         return markdown, audio_script
 
@@ -271,10 +286,11 @@ class LLMEnhancer:
         if audience not in valid_audiences:
             audience = "beginner"
 
-        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        client = self._backend.get_client() if self._backend else OpenAI(api_key=self.api_key, base_url=self.base_url)
 
-        console.print(
-            f"[dim]调用 LLM ({self.model}) 生成入门指南（受众: {audience}）...[/dim]"
+        logger.debug(
+            "调用 LLM (%s) 生成入门指南（受众: %s）...",
+            self.model, audience,
         )
 
         sys_prompt = (
@@ -295,7 +311,7 @@ class LLMEnhancer:
         )
 
         guide = (response.choices[0].message.content or "").strip()
-        console.print(f"[dim]  入门指南生成完成（{len(guide)} 字）[/dim]")
+        logger.debug("  入门指南生成完成（%s 字）", len(guide))
         return guide
 
     # ------------------------------------------------------------------
@@ -373,116 +389,13 @@ Output:
             top_p=0.8,
         )
         analysis = response.choices[0].message.content or ""
-        console.print(f"[dim]  技术分析完成（{len(analysis)} 字）[/dim]")
+        logger.debug("  技术分析完成（%s 字）", len(analysis))
         return analysis
 
     @staticmethod
     def _clean_audio_script(text: str) -> str:
-        """清理 LLM 输出的音频脚本，保留 A:/B: 说话人标记，确保适合 TTS 朗读"""
-        import re
-
-        lines = text.split("\n")
-        cleaned_lines = []
-        skip_header = True  # 跳过开头的标题行
-
-        for line in lines:
-            line = line.strip()
-
-            # 跳过空行
-            if not line:
-                continue
-
-            # 检测说话人标记（A: 或 B: 开头，保留不清理）
-            is_dialogue = bool(re.match(r"^[AB][:：]", line))
-
-            if not is_dialogue:
-                # 移除 Markdown 标题符号
-                line = re.sub(r"^#+\s*", "", line)
-
-                # 移除表格相关内容
-                if line.startswith("|") or line.startswith("---"):
-                    continue
-
-                # 移除 Markdown 链接，保留文字
-                line = re.sub(r"\[([^\]]*)\]\([^)]+\)", r"\1", line)
-
-                # 移除 URL
-                line = re.sub(r"https?://\S+", "", line)
-
-                # 移除 Markdown 格式符号
-                line = re.sub(r"[*_>`#|-]", "", line)
-
-                # 跳过开头的标题行
-                if skip_header:
-                    if re.match(r"^(音频脚本|第二部分|第三部分|纯文本|脚本|双人对话)[:：]?", line):
-                        continue
-                    if len(line) < 15 and ("脚本" in line or "部分" in line or "音频" in line or "对话" in line):
-                        continue
-                    skip_header = False
-            else:
-                # 对话行：只清理说话内容部分，保留 A:/B: 前缀
-                speaker = line[0]
-                content = line[2:].strip()
-
-                # 清理格式符号
-                content = re.sub(r"\[([^\]]*)\]\([^)]+\)", r"\1", content)
-                content = re.sub(r"https?://\S+", "", content)
-                content = re.sub(r"[*_>`#]", "", content)
-
-                # 中文模式：清理英文连词和英文标点
-                # 替换英文连词为中文
-                content = re.sub(r"\s+and\s+", "和", content)
-                content = re.sub(r"\s+to\s+", "到", content)
-                content = re.sub(r"\s+the\s+", "", content)
-                content = re.sub(r"\s+of\s+", "的", content)
-                content = re.sub(r"\s+for\s+", "用于", content)
-                content = re.sub(r"\s+with\s+", "使用", content)
-                content = re.sub(r"\s+in\s+", "在", content)
-
-                # 英文标点转中文标点（但保留版本号中的点，如 2.9.1）
-                # 先保护版本号格式（数字.数字）
-                content = re.sub(r"(\d)\.(\d)", r"\1§DOT§\2", content)
-                content = content.replace(". ", "。")
-                content = content.replace(".", "。")
-                content = content.replace(", ", "，")
-                content = content.replace(",", "，")
-                content = content.replace("? ", "？")
-                content = content.replace("?", "？")
-                content = content.replace("! ", "！")
-                content = content.replace("!", "！")
-                content = content.replace(": ", "：")
-                # 恢复版本号中的点
-                content = content.replace("§DOT§", ".")
-
-                # 修复重复字符（如 "解解算法" -> "解算法"，"configconfig" -> "config"）
-                content = re.sub(r"(.)\1{2,}", r"\1", content)
-                # 修复重复词（英文，如 "configconfig" -> "config"）
-                content = re.sub(r"([a-zA-Z]{3,})\1", r"\1", content)
-
-                # 跳过乱码行（中文字符太少且整体太短）
-                chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", content))
-                if chinese_chars < 3 and len(content) < 10:
-                    continue
-
-                line = f"{speaker}: {content}"
-
-            # 修复重复双字词（如 "可以可以" -> "可以"）
-            for length in [2, 3, 4]:
-                pattern = r"(.{" + str(length) + r"})\1{1,}"
-                line = re.sub(pattern, r"\1", line)
-
-            # 去除连续重复行
-            if cleaned_lines and line.strip() == cleaned_lines[-1].strip():
-                continue
-
-            # 清理多余的句号
-            line = re.sub(r"。{2,}", "。", line)
-            line = re.sub(r"^[。.,，]+", "", line.strip())
-
-            if line.strip():
-                cleaned_lines.append(line)
-
-        return "\n".join(cleaned_lines)
+        """清理 LLM 输出的音频脚本（委托给 text_postprocess 模块）。"""
+        return clean_audio_script(text)
 
     @staticmethod
     def _extract_mermaid(analysis: str) -> str:

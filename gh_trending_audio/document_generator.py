@@ -12,37 +12,23 @@ document_generator.py —— 将 GitHub 项目信息转化为通俗易懂的音�
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from rich.console import Console
+from .exceptions import LLMError
+from .models import RepoInfo
+from .logging_config import get_logger
+from .mermaid_gen import gen_mermaid_arch as _gen_mermaid_arch_impl
+from .mermaid_gen import gen_mermaid_flow as _gen_mermaid_flow_impl
+from .models import AudioDocument
 
-from .github_fetcher import RepoInfo
-
-console = Console()
-
-
-@dataclass
-class AudioDocument:
-    """一个项目的完整音频文档"""
-
-    repo: RepoInfo
-    title: str               # 文档标题
-    markdown: str            # Markdown 全文
-    audio_script: str       # TTS 朗读脚本（纯文本，无 Markdown 符号）
-
-    def save(self, md_path: str, script_path: str):
-        with open(md_path, "w", encoding="utf-8") as f:
-            f.write(self.markdown)
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(self.audio_script)
+logger = get_logger(__name__)
 
 
 class DocumentGenerator:
     """生成通俗易懂的音频文档"""
 
-    def __init__(self, language: str = "zh", use_llm: bool = False, style: str = "dialogue"):
+    def __init__(self, language: str = "zh", use_llm: bool = False, style: str = "dialogue") -> None:
         """
         Args:
             language: 输出语言，"zh"（中文）或 "en"（英文）
@@ -92,8 +78,8 @@ class DocumentGenerator:
 | 属性 | 信息 |
 |------|------|
 | 仓库 | [{repo.full_name}]({repo.url}) |
-| Star 数 | ⭐ {repo.stars:,} |
-| Fork 数 | 🍴 {repo.forks:,} |
+| Star 数 | {repo.stars:,} |
+| Fork 数 | {repo.forks:,} |
 | 编程语言 | {repo.language} |
 | 开源协议 | {repo.license_name} |
 | 标签 | {topics_str} |
@@ -182,8 +168,8 @@ class DocumentGenerator:
 | Field | Info |
 |-------|------|
 | Repository | [{repo.full_name}]({repo.url}) |
-| Stars | ⭐ {repo.stars:,} |
-| Forks | 🍴 {repo.forks:,} |
+| Stars | {repo.stars:,} |
+| Forks | {repo.forks:,} |
 | Language | {repo.language} |
 | License | {repo.license_name} |
 | Topics | {topics_str} |
@@ -264,7 +250,7 @@ That's it for today's GitHub Trending Report. See you next time!
             audio_script = content.get("audio_script", "")
 
             if not markdown or not audio_script:
-                console.print("[yellow]⚠ LLM 返回为空，回退到模板模式[/yellow]")
+                logger.warning("⚠ LLM 返回为空，回退到模板模式")
                 return self._generate_with_template(repo, readme_text)
 
             return AudioDocument(
@@ -274,11 +260,11 @@ That's it for today's GitHub Trending Report. See you next time!
                 audio_script=audio_script,
             )
         except ImportError:
-            console.print("[yellow]⚠ 未安装 openai 库，回退到模板模式[/yellow]")
-            console.print("[dim]  pip install openai  可启用 LLM 模式[/dim]")
+            logger.warning("未安装 openai 库，回退到模板模式")
+            logger.debug("  pip install openai  可启用 LLM 模式")
             return self._generate_with_template(repo, readme_text)
         except Exception as e:
-            console.print(f"[yellow]⚠ LLM 调用失败: {e}，回退到模板模式[/yellow]")
+            logger.warning("LLM 调用失败，回退到模板模式: %s", e, exc_info=True)
             return self._generate_with_template(repo, readme_text)
 
     # ------------------------------------------------------------------
@@ -425,94 +411,18 @@ That's it for today's GitHub Trending Report. See you next time!
         return template.render(**context)
 
     # ------------------------------------------------------------------
-    # Mermaid 架构图 / 流程图生成（模板模式兜底，零 LLM 依赖）
+    # Mermaid 图表生成（委托给 mermaid_gen 模块，消除循环依赖）
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _gen_mermaid_arch(repo, language: str = "zh") -> str:
-        """根据 repo 信息生成 Mermaid 架构图。
-
-        不依赖 LLM，纯模板拼接，保证每次都能生成。
-        """
-        lang = repo.language or "Unknown"
-        topics = repo.topics[:4] if repo.topics else []
-        desc = (repo.description or "")[:40]
-        name = repo.full_name.split("/")[-1] if "/" in repo.full_name else repo.full_name
-
-        if language == "zh":
-            label_core = "核心模块"
-            label_input = "输入层"
-            label_output = "输出层"
-            label_comm = "社区生态"
-            label_docs = "文档与测试"
-        else:
-            label_core = "Core Module"
-            label_input = "Input Layer"
-            label_output = "Output Layer"
-            label_comm = "Community"
-            label_docs = "Docs & Tests"
-
-        topic_nodes = ""
-        for i, t in enumerate(topics):
-            safe_t = t.replace("-", "_").replace(".", "_")
-            topic_nodes += f"    T{i}[{t}] --> Core\n"
-
-        return f"""graph TD
-    subgraph {label_input}
-        GH[GitHub Source]
-        RD[README / Docs]
-    end
-    subgraph {label_core}
-        Core[{name}<br/>{lang}]
-        {topic_nodes}    end
-    subgraph {label_output}
-        MD[Markdown 文档]
-        AU[音频播客]
-    end
-    subgraph {label_comm}
-        ST[⭐ {repo.stars:,} Stars]
-        FK[🍴 {repo.forks:,} Forks]
-    end
-    subgraph {label_docs}
-        DT[文档]
-        CI[CI/CD]
-    end
-    GH --> Core
-    RD --> Core
-    Core --> MD
-    Core --> AU
-    ST -.-> Core
-    FK -.-> Core
-    Core -.-> DT
-    Core -.-> CI"""
+    def _gen_mermaid_arch(repo: RepoInfo, language: str = "zh") -> str:
+        """根据 repo 信息生成 Mermaid 架构图（委托给 mermaid_gen 模块）。"""
+        return _gen_mermaid_arch_impl(repo, language)
 
     @staticmethod
-    def _gen_mermaid_flow(repo, language: str = "zh") -> str:
-        """根据 repo 信息生成 Mermaid 使用流程图。"""
-        name = repo.full_name.split("/")[-1] if "/" in repo.full_name else repo.full_name
-
-        if language == "zh":
-            steps = [
-                ("A", "🔍 发现项目", f"GitHub Trending / 搜索"),
-                ("B", "📥 克隆仓库", f"git clone {repo.full_name}"),
-                ("C", "📖 阅读文档", "README + 文档"),
-                ("D", "⚙️ 安装依赖", f"基于 {repo.language or '项目'} 环境"),
-                ("E", "🚀 运行项目", "本地启动 / 部署"),
-                ("F", "💡 实际使用", "集成到自己的项目"),
-            ]
-        else:
-            steps = [
-                ("A", "🔍 Discover", "GitHub Trending / Search"),
-                ("B", "📥 Clone Repo", f"git clone {repo.full_name}"),
-                ("C", "📖 Read Docs", "README + Documentation"),
-                ("D", "⚙️ Install Dependencies", f"{repo.language or 'Project'} environment"),
-                ("E", "🚀 Run Project", "Local start / Deploy"),
-                ("F", "💡 Use in Practice", "Integrate into your project"),
-            ]
-
-        nodes = "\n".join(f'    {sid}["{label}<br/><small>{detail}</small>"]' for sid, label, detail in steps)
-        arrows = " --> ".join(sid for sid, _, _ in steps)
-        return f"graph LR\n{nodes}\n    {arrows}"
+    def _gen_mermaid_flow(repo: RepoInfo, language: str = "zh") -> str:
+        """根据 repo 信息生成 Mermaid 使用流程图（委托给 mermaid_gen 模块）。"""
+        return _gen_mermaid_flow_impl(repo, language)
 
     @staticmethod
     def _readme_to_spoken_en(readme: str) -> list[str]:

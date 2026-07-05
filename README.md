@@ -8,10 +8,14 @@
 
 - **零成本**：edge-tts 使用微软 Edge 在线语音服务，完全免费，无需 API Key，无需 GPU
 - **高质量语音**：神经网络语音引擎，音质接近商业 TTS 服务（Azure / 讯飞）
+- **TTS 三级回退**：siliconflow（CosyVoice2）→ edge-tts（微软 Neural）→ espeak-ng（离线），确保始终可用
 - **双语支持**：中文（晓晓、云希等）和英文（Jenny、Guy 等）多款语音可选
 - **智能文档**：自动提取 README 关键信息，生成播客式口语化脚本
-- **LLM 增强**（可选）：接入大模型生成更生动的内容，支持 OpenAI / DeepSeek / 通义千问
+- **LLM 增强**（可选）：接入大模型生成更生动的内容，支持硅基流动 / DeepSeek / OpenAI / 通义千问
+- **多风格播客**：对话、辩论、访谈、新闻、故事 5 种播客风格
+- **Web 仪表盘**：内置 Web 界面，支持在线播放、项目详情、代码搜索、社区洞察
 - **灵活过滤**：按编程语言、topic、star 数、时间范围筛选项目
+- **快捷子命令**：`quick`（零配置）、`podcast`（LLM 对话）、`compare`（多仓库对比）
 
 ## 工作流程
 
@@ -38,6 +42,21 @@ pip install -r requirements.txt
 
 ### 2. 基本用法
 
+#### 快捷子命令（推荐新手使用）
+
+```bash
+# 零配置快速体验：3 个 Python 项目，中文音频，模板模式
+python main.py quick
+
+# LLM 增强播客：双人对话风格，需设置 LLM_API_KEY
+python main.py podcast --style dialogue
+
+# 多仓库对比播客：对比 2-3 个项目
+python main.py compare "https://github.com/a/b,https://github.com/c/d"
+```
+
+#### 完整参数模式
+
 ```bash
 # 获取最近 7 天的 Python 热门项目，生成中文音频
 python main.py --days 7 --limit 3 --language python
@@ -52,10 +71,19 @@ python main.py --limit 100 --serial --language python
 python main.py --topic llm --limit 5
 
 # 英文播客
-python main.py --lang en --voice en-US-GuyNeural
+python main.py --output-lang en --voice en-US-GuyNeural
 
 # 调整语速（加速 10%）
 python main.py --rate "+10%"
+
+# 指定 TTS 引擎（auto / siliconflow / edge-tts / espeak-ng）
+python main.py --engine siliconflow --use-llm
+
+# 单仓库模式：直接处理指定 GitHub 仓库
+python main.py --repo-url https://github.com/owner/repo --use-llm
+
+# 多仓库对比模式
+python main.py --compare "https://github.com/a/b,https://github.com/c/d" --use-llm
 ```
 
 ### 3. 输出文件
@@ -84,11 +112,11 @@ export GITHUB_TOKEN=ghp_xxxxx
 ```bash
 pip install openai
 
-# 使用 OpenAI
+# 使用硅基流动（默认，9B 以下永久免费）
 export LLM_API_KEY=sk-xxx
-python main.py --use-llm --limit 2
+python main.py podcast
 
-# 使用 DeepSeek（更便宜）
+# 使用 DeepSeek
 export LLM_API_KEY=sk-xxx
 export LLM_BASE_URL=https://api.deepseek.com/v1
 export LLM_MODEL=deepseek-chat
@@ -123,6 +151,16 @@ python main.py --list-voices
 
 ## 命令行参数
 
+### 快捷子命令
+
+| 子命令 | 说明 | 必需配置 |
+|--------|------|----------|
+| `quick` | 零配置快速体验（3 个 Python 项目，中文音频） | 无 |
+| `podcast` | LLM 增强双人对话播客 | `LLM_API_KEY` |
+| `compare` | 多仓库对比播客（2-3 个项目） | `LLM_API_KEY` + 仓库 URL |
+
+### 完整参数
+
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--days` | 7 | 查看最近 N 天创建的项目 |
@@ -130,10 +168,14 @@ python main.py --list-voices
 | `--language` | None | 按编程语言过滤（python、rust 等） |
 | `--topic` | None | 按 topic 过滤（ai、llm、web 等） |
 | `--min-stars` | 50 | 最低 star 数阈值 |
-| `--lang` | zh | 输出语言（zh / en） |
+| `--output-lang` | zh | 输出语言（zh / en），旧名 `--lang` 仍兼容 |
 | `--voice` | 自动 | 指定语音名称 |
 | `--rate` | +0% | 语速（+10% 加速，-10% 减速） |
+| `--engine` | auto | TTS 引擎（auto / siliconflow / edge-tts / espeak-ng） |
+| `--style` | dialogue | 播客风格（dialogue / debate / interview / news / story） |
 | `--use-llm` | False | 启用 LLM 增强 |
+| `--repo-url` | None | 单仓库模式：直接处理指定 GitHub 仓库 |
+| `--compare` | None | 对比模式：逗号分隔的仓库 URL 列表 |
 | `--serial` | False | 串行模式（逐个项目处理，适合大量项目） |
 | `--token` | None | GitHub Token |
 | `--output` | 自动 | 输出目录 |
@@ -171,18 +213,17 @@ python main.py --list-voices
 
 ## 技术选型说明
 
-### 为什么选 edge-tts？
+### TTS 引擎三级回退
 
-| 方案 | 成本 | 质量 | 部署难度 | 中文支持 |
-|------|------|------|----------|----------|
-| **edge-tts** | **免费** | **高** | **极低（pip install）** | **优秀** |
-| Azure TTS | 按字符收费 | 高 | 低 | 优秀 |
-| ElevenLabs | 按字符收费 | 极高 | 低 | 一般 |
-| ChatTTS | 免费（需 GPU） | 高 | 高（需显卡） | 优秀 |
-| Bark | 免费（需 GPU） | 高 | 高（需显卡） | 一般 |
-| Coqui TTS | 免费（需 GPU） | 中高 | 中 | 一般 |
+工具按优先级自动尝试三个 TTS 引擎，确保音频始终可用：
 
-edge-tts 在"成本、质量、易用性"三者间取得最佳平衡：调用微软云端服务，本地无需 GPU，零成本且音质优秀。
+| 优先级 | 引擎 | 质量 | 成本 | 说明 |
+|--------|------|------|------|------|
+| 1 | siliconflow (CosyVoice2) | 极高 | 免费（9B 以下） | 需 API Key，支持双人对话模式 |
+| 2 | edge-tts (微软 Neural) | 高 | 免费 | 无需 API Key，默认引擎 |
+| 3 | espeak-ng | 低 | 免费 | 离线兜底，需 `apt-get install espeak-ng` |
+
+对话模式（`--style dialogue` 等）会为 A/B 两个说话人分配不同语音，增强播客效果。
 
 ### 为什么用 GitHub Search API 而非爬虫？
 
@@ -196,14 +237,23 @@ edge-tts 在"成本、质量、易用性"三者间取得最佳平衡：调用微
 gh_trending_audio/
 ├── main.py                          # 入口文件
 ├── requirements.txt                 # 依赖
+├── .env.example                     # 环境变量模板
 ├── README.md                        # 本文档
 └── gh_trending_audio/
     ├── __init__.py
+    ├── cli.py                       # 命令行界面（含 quick/podcast/compare 子命令）
+    ├── config.py                    # 配置管理（LLM / TTS / GitHub）
     ├── github_fetcher.py            # GitHub API 获取趋势项目
     ├── document_generator.py        # 生成音频文档（模板/LLM）
-    ├── tts_engine.py                # edge-tts 语音合成
-    ├── llm_enhancer.py              # 可选 LLM 增强
-    └── cli.py                       # 命令行界面
+    ├── tts_engine.py                # 语音合成（siliconflow→edge-tts→espeak-ng 三级回退）
+    ├── llm_enhancer.py              # 可选 LLM 增强（多风格播客脚本）
+    ├── styles.py                    # 播客风格定义
+    ├── prompts.py                   # LLM prompt 模板
+    ├── mermaid_gen.py               # Mermaid 架构图生成
+    └── web/                         # Web 仪表盘
+        ├── handler.py               # HTTP 请求处理
+        ├── renderer.py              # 页面渲染
+        └── templates.py             # HTML/CSS/JS 模板
 ```
 
 ## License

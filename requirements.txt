@@ -1,30 +1,33 @@
-# 核心依赖
-edge-tts>=7.2.0          # 微软 Edge 免费 TTS 引擎（零成本、高质量、支持中文）
-requests>=2.31.0          # GitHub API 请求
-markdown>=3.5             # README Markdown 解析
-beautifulsoup4>=4.12.0    # 从 HTML 中提取纯文本
-rich>=13.7.0              # 美观的 CLI 输出
+# ── 核心依赖（与 pyproject.toml [project.dependencies] 对齐）──
+requests>=2.31.0,<3.0          # HTTP 请求
+markdown>=3.5,<4.0             # Markdown 解析
+beautifulsoup4>=4.12.0,<5.0    # HTML 纯文本提取
+rich>=13.7.0,<15.0             # CLI 美化输出
+python-dotenv>=1.0.0,<2.0      # .env 文件加载
+cachetools>=5.3.0,<8.0         # TTL/LRU 缓存
+Jinja2>=3.1.0,<4.0             # 模板引擎
+pymdown-extensions>=10.0,<12.0 # GFM Markdown 扩展
+mutagen>=1.47.0,<2.0           # 音频元数据读取
+pydantic>=2.0.0,<3.0           # 数据模型校验
+feedgen>=1.0.0,<2.0            # RSS 播客订阅源生成（iTunes 扩展）
+fpdf2>=2.7.0,<3.0              # PDF 文档生成（CJK 字体支持）
+ebooklib>=0.18,<1.0            # EPUB 电子书生成
+ollama>=0.4.0,<1.0             # 本地 LLM（Ollama Python 客户端）
+tree-sitter-languages>=1.10,<2.0  # AST 代码解析（多语言符号提取）
 
-# Phase 1: 安全与音频质量
-pydub>=0.25.1             # 音频拼接（交叉淡入淡出，替代二进制 cat）
-python-dotenv>=1.0.0      # .env 文件加载（安全存储 API Key）
+# ── TTS 引擎（与 pyproject.toml [project.optional-dependencies.tts] 对齐）──
+edge-tts>=7.2.0,<8.0           # 微软 Edge 免费 TTS 引擎
+pydub>=0.25.1,<1.0             # 音频拼接（交叉淡入淡出）
 
-# Phase 2: 缓存与 LLM 一致性
-cachetools>=5.3.0         # TTL/LRU 缓存（替代内存字典，自动过期）
+# ── GitHub SDK（与 pyproject.toml [project.optional-dependencies.github] 对齐）──
+PyGithub>=2.0.0,<3.0           # GitHub API SDK
 
-# Phase 3: GitHub SDK
-PyGithub>=2.1.0           # GitHub API SDK（替代手写 REST URL + base64 解码）
+# ── LLM 增强（与 pyproject.toml [project.optional-dependencies.llm] 对齐）──
+openai>=1.10.0,<3.0            # OpenAI 兼容 API 客户端
+instructor>=1.0.0,<2.0         # LLM 结构化输出（pydantic 校验）
 
-# Phase 4: 前端 Markdown 增强
-pymdown-extensions>=10.0  # GFM 扩展（任务列表、删除线、emoji、自动链接）
-
-# Phase 5: LLM 质量与实时性
-mutagen>=1.47.0           # 音频元数据读取（替代 ffprobe subprocess，纯 Python）
-instructor>=1.0.0         # LLM 结构化输出（pydantic 校验，替代字符串分割）
-pydantic>=2.0.0           # 数据模型校验（instructor 依赖）
-
-# Phase 6: 代码质量与体验打磨
-Jinja2>=3.1.0             # 模板引擎（替代 f-string 文档模板，支持继承与复杂逻辑）
-
-# 可选：LLM 增强（无需安装也能运行，仅在 --use-llm 时需要）
-# openai>=1.10.0
+# ── 开发工具（与 pyproject.toml [project.optional-dependencies.dev] 对齐）──
+# pytest>=7.0
+# pytest-cov>=4.0
+# ruff>=0.1.0
+# mypy>=1.0

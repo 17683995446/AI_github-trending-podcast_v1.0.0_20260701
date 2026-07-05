@@ -8,8 +8,8 @@
 | 字段 | 信息 |
 |------|------|
 | 仓库 | [{{ repo.full_name }}]({{ repo.url }}) |
-| 星标 | ⭐ {{ "{:,}".format(repo.stars) }} |
-| Fork | 🍴 {{ "{:,}".format(repo.forks) }} |
+| 星标 | {{ "{:,}".format(repo.stars) }} |
+| Fork | {{ "{:,}".format(repo.forks) }} |
 | 编程语言 | {{ repo.language or 'N/A' }} |
 | 开源协议 | {{ repo.license_name or 'N/A' }} |
 | 标签 | {{ topics_str }} |

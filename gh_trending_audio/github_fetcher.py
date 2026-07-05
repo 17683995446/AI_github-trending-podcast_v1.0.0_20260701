@@ -14,69 +14,32 @@ from __future__ import annotations
 import base64
 import os
 import re
-from dataclasses import dataclass, field
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 import requests
-from rich.console import Console
 
-console = Console()
+from .constants import (
+    GITHUB_API_URL,
+    GITHUB_SEARCH_TIMEOUT,
+    GITHUB_REPO_TIMEOUT,
+    GITHUB_LIGHT_TIMEOUT,
+    README_MAX_BYTES,
+    TTS_SYNTHESIS_TIMEOUT,
+)
+from .exceptions import GitHubAPIError, GitHubRateLimitError, GitHubNotFoundError, NetworkError
+from .logging_config import get_logger
+from .models import RepoInfo
 
-GITHUB_API = "https://api.github.com"
+logger = get_logger(__name__)
 
-
-@dataclass
-class RepoInfo:
-    """一个 GitHub 仓库的结构化信息"""
-
-    full_name: str          # owner/repo
-    name: str
-    owner: str
-    description: str
-    url: str                # html_url
-    homepage: str           # 项目主页
-    language: str
-    stars: int
-    forks: int
-    open_issues: int
-    watchers: int
-    topics: list[str] = field(default_factory=list)
-    created_at: str = ""
-    pushed_at: str = ""
-    license_name: str = ""
-    readme_text: str = ""   # 抓取后填充
-    # ── 增强数据（enrich_with_details 填充）──
-    file_tree: str = ""         # 仓库目录结构摘要
-    key_files: str = ""         # 关键文件内容（setup.py/pyproject.toml 等）
-    recent_releases: str = ""   # 最近发布的版本信息
-    recent_issues: str = ""      # 最近热门 issues
-    languages_breakdown: str = "" # 代码语言占比
-    contributors_count: int = 0  # 贡献者数量
-    commits_count: int = 0       # 最近提交数
-
-    @property
-    def short_name(self) -> str:
-        return self.name
-
-    def to_dict(self) -> dict:
-        return {
-            "full_name": self.full_name,
-            "description": self.description,
-            "url": self.url,
-            "stars": self.stars,
-            "forks": self.forks,
-            "language": self.language,
-            "topics": self.topics,
-            "license": self.license_name,
-            "readme_preview": self.readme_text[:500] if self.readme_text else "",
-        }
+GITHUB_API = GITHUB_API_URL
 
 
 class GitHubFetcher:
     """封装 GitHub Search API + README 获取"""
 
-    def __init__(self, token: Optional[str] = None):
+    def __init__(self, token: str | None = None) -> None:
         """
         Args:
             token: GitHub Personal Access Token（可选）。
@@ -102,12 +65,43 @@ class GitHubFetcher:
         self,
         days: int = 7,
         limit: int = 5,
-        language: Optional[str] = None,
+        language: str | None = None,
         min_stars: int = 50,
-        topic: Optional[str] = None,
+        topic: str | None = None,
     ) -> list[RepoInfo]:
+        """获取最近高价值项目（批量模式）。"""
+        return list(self._fetch_trending_pages(days, limit, language, min_stars, topic))
+
+    def fetch_trending_iter(
+        self,
+        days: int = 7,
+        limit: int = 5,
+        language: str | None = None,
+        min_stars: int = 50,
+        topic: str | None = None,
+    ) -> Iterator[RepoInfo]:
+        """获取最近高价值项目（生成器模式，逐个返回）。"""
+        yield from self._fetch_trending_pages(days, limit, language, min_stars, topic)
+
+    def _fetch_trending_pages(
+        self,
+        days: int = 7,
+        limit: int = 5,
+        language: str | None = None,
+        min_stars: int = 50,
+        topic: str | None = None,
+    ) -> Iterator[RepoInfo]:
         """
-        获取最近 N 天内 star 数最高的项目（支持分页，突破单页 30 条限制）。
+        内部生成器：获取最近 N 天内 star 数最高的项目（共享分页逻辑）。
+
+        被 fetch_trending（批量模式）与 fetch_trending_iter（生成器模式）复用，
+        避免两处重复实现查询构建、分页、API 请求、速率限制检查等逻辑。
+
+        流程：
+            - 构建 GitHub Search 查询字符串
+            - 自动翻页（每页最多 100 条，总上限 1000 条）
+            - 调用 API、解析响应、检查速率限制
+            - 逐个 yield RepoInfo 对象
 
         Args:
             days:        查看最近多少天内创建的项目（默认 7 天）
@@ -116,8 +110,8 @@ class GitHubFetcher:
             min_stars:   最低 star 数阈值（默认 50，过滤噪音）
             topic:       按 topic 过滤，例如 "ai" / "llm"（可选）
 
-        Returns:
-            RepoInfo 列表，按 star 降序
+        Yields:
+            RepoInfo 对象（按 star 降序，逐个返回）
 
         分页策略：
             - 每页最多 100 条（GitHub API 上限）
@@ -136,85 +130,7 @@ class GitHubFetcher:
 
         # limit 上限保护
         limit = min(limit, self.MAX_TOTAL_RESULTS)
-        console.print(f"[dim]搜索条件: {query} | 目标获取: {limit} 个[/dim]")
-
-        results: list[RepoInfo] = []
-        page = 1
-        total_count = 0
-        per_page = min(self.MAX_PER_PAGE, limit)
-
-        while len(results) < limit:
-            remaining = limit - len(results)
-            current_per_page = min(per_page, remaining)
-
-            params = {
-                "q": query,
-                "sort": "stars",
-                "order": "desc",
-                "per_page": current_per_page,
-                "page": page,
-            }
-
-            resp = self.session.get(
-                f"{GITHUB_API}/search/repositories", params=params, timeout=30
-            )
-            self._check_rate_limit(resp)
-            resp.raise_for_status()
-
-            data = resp.json()
-            total_count = data.get("total_count", 0)
-            items = data.get("items", [])
-
-            if not items:
-                break
-
-            for item in items:
-                if len(results) >= limit:
-                    break
-                results.append(self._parse_repo(item))
-
-            page += 1
-            # GitHub Search API 最多翻 10 页（1000 条）
-            if page > 10:
-                break
-
-        console.print(
-            f"[green]✓ 找到 {total_count} 个项目，已获取 {len(results)} 个"
-            + (f"（分 {page - 1} 页）" if page > 2 else "")
-            + "[/green]"
-        )
-        return results
-
-    def fetch_trending_iter(
-        self,
-        days: int = 7,
-        limit: int = 5,
-        language: Optional[str] = None,
-        min_stars: int = 50,
-        topic: Optional[str] = None,
-    ):
-        """
-        生成器模式：逐个返回项目，适合串行流水线。
-
-        优势：
-            - 不需要等所有项目都获取完才开始处理
-            - 内存占用低（不缓存全部结果）
-            - 可以边获取边生成文档和音频
-
-        Yields:
-            RepoInfo 对象（逐个返回）
-        """
-        since_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
-
-        query_parts = [f"created:>{since_date}", f"stars:>={min_stars}"]
-        if language:
-            query_parts.append(f"language:{language}")
-        if topic:
-            query_parts.append(f"topic:{topic}")
-        query = " ".join(query_parts)
-
-        limit = min(limit, self.MAX_TOTAL_RESULTS)
-        console.print(f"[dim]搜索条件: {query} | 串行模式，目标: {limit} 个[/dim]")
+        logger.debug("搜索条件: %s | 目标获取: %s 个", query, limit)
 
         yielded = 0
         page = 1
@@ -234,7 +150,7 @@ class GitHubFetcher:
             }
 
             resp = self.session.get(
-                f"{GITHUB_API}/search/repositories", params=params, timeout=30
+                f"{GITHUB_API}/search/repositories", params=params, timeout=GITHUB_SEARCH_TIMEOUT
             )
             self._check_rate_limit(resp)
             resp.raise_for_status()
@@ -250,18 +166,20 @@ class GitHubFetcher:
                 if yielded >= limit:
                     break
                 repo = self._parse_repo(item)
-                console.print(
-                    f"[green]✓[/green] [{yielded + 1}/{limit}] {repo.full_name} "
-                    f"(⭐{repo.stars:,})"
+                logger.info(
+                    "✓ [%s/%s] %s (⭐%s)",
+                    yielded + 1, limit, repo.full_name, format(repo.stars, ","),
                 )
                 yielded += 1
                 yield repo
 
             page += 1
+            # GitHub Search API 最多翻 10 页（1000 条）
             if page > 10:
                 break
 
-        console.print(f"[dim]共找到 {total_count} 个项目，已获取 {yielded} 个[/dim]")
+        extra = f"（分 {page - 1} 页）" if page > 2 else ""
+        logger.info("✓ 找到 %s 个项目，已获取 %s 个%s", total_count, yielded, extra)
 
     def fetch_single_repo(self, repo_url: str) -> RepoInfo:
         """
@@ -288,19 +206,17 @@ class GitHubFetcher:
         """
         owner, repo = self._parse_repo_url(repo_url)
         if not owner or not repo:
-            raise ValueError(f"无法从 URL 解析出 owner/repo: {repo_url}")
+            raise GitHubAPIError(f"无法从 URL 解析出 owner/repo: {repo_url}")
 
-        console.print(f"[dim]获取仓库: {owner}/{repo}[/dim]")
-        resp = self.session.get(f"{GITHUB_API}/repos/{owner}/{repo}", timeout=30)
+        logger.debug("获取仓库: %s/%s", owner, repo)
+        resp = self.session.get(f"{GITHUB_API}/repos/{owner}/{repo}", timeout=GITHUB_SEARCH_TIMEOUT)
         self._check_rate_limit(resp)
         if resp.status_code == 404:
-            raise ValueError(f"仓库不存在或无权访问: {owner}/{repo}")
+            raise GitHubNotFoundError(f"仓库不存在或无权访问: {owner}/{repo}")
         resp.raise_for_status()
 
         repo_info = self._parse_repo(resp.json())
-        console.print(
-            f"[green]✓[/green] {repo_info.full_name} (⭐{repo_info.stars:,})"
-        )
+        logger.info("✓ %s (⭐%s)", repo_info.full_name, format(repo_info.stars, ","))
         return repo_info
 
     def enrich_with_readme(self, repo: RepoInfo, max_chars: int = 4000) -> str:
@@ -317,7 +233,7 @@ class GitHubFetcher:
         # 优先取 README
         try:
             resp = self.session.get(
-                f"{GITHUB_API}/repos/{repo.full_name}/readme", timeout=20
+                f"{GITHUB_API}/repos/{repo.full_name}/readme", timeout=GITHUB_REPO_TIMEOUT
             )
             self._check_rate_limit(resp)
             if resp.status_code == 200:
@@ -330,14 +246,14 @@ class GitHubFetcher:
                     raw = content_b64
                 repo.readme_text = self._markdown_to_text(raw)[:max_chars]
                 return repo.readme_text
-        except Exception as e:
-            console.print(f"[yellow]⚠ 获取 README 失败 ({repo.full_name}): {e}[/yellow]")
+        except (NetworkError, GitHubAPIError) as e:
+            logger.warning("⚠ 获取 README 失败 (%s): %s", repo.full_name, e)
 
         # 退化方案：用 description
         repo.readme_text = repo.description or "（无 README）"
         return repo.readme_text
 
-    def enrich_with_details(self, repo: RepoInfo):
+    def enrich_with_details(self, repo: RepoInfo) -> str:
         """
         获取仓库的深度信息，为 LLM 提供更丰富的上下文。
 
@@ -385,7 +301,7 @@ class GitHubFetcher:
             parts.append(f"贡献者数量: {contributors}")
 
         if parts:
-            console.print(f"  [dim]已获取深度信息（{len(parts)} 项）[/dim]")
+            logger.debug("  已获取深度信息（%s 项）", len(parts))
         return "\n\n".join(parts)
 
     # ------------------------------------------------------------------
@@ -405,7 +321,7 @@ class GitHubFetcher:
         import shutil as _shutil
 
         if not _shutil.which("repomix"):
-            console.print("  [yellow]⚠ repomix 未安装，跳过代码架构分析[/yellow]")
+            logger.warning("  ⚠ repomix 未安装，跳过代码架构分析")
             return ""
 
         try:
@@ -422,10 +338,10 @@ class GitHubFetcher:
                 "requirements.txt,package.json,Cargo.toml,go.mod",
             ]
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=120
+                cmd, capture_output=True, text=True, timeout=TTS_SYNTHESIS_TIMEOUT
             )
             if result.returncode != 0:
-                console.print(f"  [yellow]⚠ repomix 失败: {result.stderr[:100]}[/yellow]")
+                logger.warning("  ⚠ repomix 失败: %s", result.stderr[:100])
                 return ""
 
             output = result.stdout
@@ -450,86 +366,26 @@ class GitHubFetcher:
             if not combined.strip():
                 return ""
 
-            console.print(f"  [dim]repomix 生成 {len(combined)} 字符的代码架构[/dim]")
+            logger.debug("  repomix 生成 %s 字符的代码架构", len(combined))
             return combined[:12000]  # 硬限制 12000 字符
 
         except subprocess.TimeoutExpired:
-            console.print("  [yellow]⚠ repomix 超时（120s），跳过[/yellow]")
+            logger.warning("  ⚠ repomix 超时（120s），跳过")
             return ""
-        except Exception as e:
-            console.print(f"  [yellow]⚠ repomix 异常: {e}[/yellow]")
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.warning("  ⚠ repomix 异常: %s", e)
             return ""
 
     # ------------------------------------------------------------------
     # 深度信息获取的内部方法
     # ------------------------------------------------------------------
 
-    def _fetch_file_tree(self, repo: RepoInfo) -> str:
-        """获取仓库目录结构（前 2 层）"""
-        try:
-            resp = self.session.get(
-                f"{GITHUB_API}/repos/{repo.full_name}/git/trees/main?recursive=1",
-                timeout=15,
-            )
-            if resp.status_code != 200:
-                resp = self.session.get(
-                    f"{GITHUB_API}/repos/{repo.full_name}/git/trees/master?recursive=1",
-                    timeout=15,
-                )
-            if resp.status_code != 200:
-                return ""
-            data = resp.json()
-            tree = data.get("tree", [])
-            # 只取前 2 层路径，去重
-            seen = set()
-            lines = []
-            for item in tree[:200]:
-                path = item.get("path", "")
-                parts = path.split("/")
-                if len(parts) <= 2:
-                    short = "/".join(parts[:2])
-                    if short not in seen:
-                        seen.add(short)
-                        t = item.get("type", "blob")
-                        prefix = "📁 " if t == "tree" else "📄 "
-                        lines.append(f"{prefix}{short}")
-            return "\n".join(lines[:50])
-        except Exception:
-            return ""
-
-    def _fetch_key_files(self, repo: RepoInfo) -> str:
-        """获取关键配置文件内容"""
-        candidates = [
-            "pyproject.toml", "setup.py", "setup.cfg",
-            "package.json", "Cargo.toml", "go.mod",
-            "requirements.txt", "Dockerfile",
-        ]
-        results = []
-        for fname in candidates:
-            try:
-                resp = self.session.get(
-                    f"{GITHUB_API}/repos/{repo.full_name}/contents/{fname}",
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    content_b64 = data.get("content", "")
-                    if content_b64:
-                        raw = base64.b64decode(content_b64).decode("utf-8", errors="replace")
-                        # 只取前 30 行
-                        lines = raw.split("\n")[:30]
-                        results.append(f"--- {fname} ---\n" + "\n".join(lines))
-                        break  # 找到第一个就够
-            except Exception:
-                continue
-        return "\n\n".join(results)
-
     def _fetch_releases(self, repo: RepoInfo) -> str:
         """获取最近 3 个 release"""
         try:
             resp = self.session.get(
                 f"{GITHUB_API}/repos/{repo.full_name}/releases?per_page=3",
-                timeout=10,
+                timeout=GITHUB_LIGHT_TIMEOUT,
             )
             if resp.status_code != 200:
                 return ""
@@ -542,7 +398,8 @@ class GitHubFetcher:
                 body = (r.get("body") or "")[:300]
                 lines.append(f"版本 {tag} ({date}): {name}\n{body}")
             return "\n\n".join(lines)
-        except Exception:
+        except (KeyError, ValueError, requests.RequestException):
+            logger.debug("releases 获取失败", exc_info=True)
             return ""
 
     def _fetch_hot_issues(self, repo: RepoInfo) -> str:
@@ -550,7 +407,7 @@ class GitHubFetcher:
         try:
             resp = self.session.get(
                 f"{GITHUB_API}/search/issues?q=repo:{repo.full_name}+is:issue+sort:reactions&per_page=5",
-                timeout=10,
+                timeout=GITHUB_LIGHT_TIMEOUT,
             )
             if resp.status_code != 200:
                 return ""
@@ -563,14 +420,15 @@ class GitHubFetcher:
                 state = "已关闭" if iss.get("state") == "closed" else "开放中"
                 lines.append(f"[{state}] {title} (👍{reactions})")
             return "\n".join(lines)
-        except Exception:
+        except (KeyError, ValueError, requests.RequestException):
+            logger.debug("hot issues 获取失败", exc_info=True)
             return ""
 
     def _fetch_languages(self, repo: RepoInfo) -> str:
         """获取代码语言占比"""
         try:
             resp = self.session.get(
-                f"{GITHUB_API}/repos/{repo.full_name}/languages", timeout=10
+                f"{GITHUB_API}/repos/{repo.full_name}/languages", timeout=GITHUB_LIGHT_TIMEOUT
             )
             if resp.status_code != 200:
                 return ""
@@ -583,7 +441,8 @@ class GitHubFetcher:
                 pct = round(bytes_count / total * 100, 1)
                 lines.append(f"{lang}: {pct}%")
             return "\n".join(lines)
-        except Exception:
+        except (KeyError, ValueError, requests.RequestException):
+            logger.debug("languages 获取失败", exc_info=True)
             return ""
 
     def _fetch_contributors_count(self, repo: RepoInfo) -> int:
@@ -591,7 +450,7 @@ class GitHubFetcher:
         try:
             resp = self.session.get(
                 f"{GITHUB_API}/repos/{repo.full_name}/contributors?per_page=1&anon=true",
-                timeout=10,
+                timeout=GITHUB_LIGHT_TIMEOUT,
             )
             if resp.status_code != 200:
                 return 0
@@ -605,7 +464,8 @@ class GitHubFetcher:
                     return int(match.group(1))
             # 没有分页说明只有 1 页
             return len(resp.json())
-        except Exception:
+        except (KeyError, ValueError, requests.RequestException):
+            logger.debug("contributors count 获取失败", exc_info=True)
             return 0
 
     # ------------------------------------------------------------------
@@ -679,7 +539,8 @@ class GitHubFetcher:
             # 折叠多余空行
             lines = [line.strip() for line in text.splitlines() if line.strip()]
             return "\n".join(lines)
-        except Exception:
+        except (OSError, NetworkError) as e:
+            logger.debug("markdown 转纯文本失败，使用基础清理", exc_info=True)
             # 如果依赖未安装，做最简单的清理
             import re
             text = re.sub(r"```[\s\S]*?```", "", md)      # 代码块
@@ -691,29 +552,29 @@ class GitHubFetcher:
             return text.strip()
 
     @staticmethod
-    def _check_rate_limit(resp: requests.Response):
+    def _check_rate_limit(resp: requests.Response) -> None:
         """检查 GitHub API 速率限制，给出友好提示"""
         remaining = resp.headers.get("X-RateLimit-Remaining")
         if remaining is not None and int(remaining) <= 1:
             reset_ts = int(resp.headers.get("X-RateLimit-Reset", 0))
             if reset_ts:
                 reset_time = datetime.fromtimestamp(reset_ts, tz=timezone.utc)
-                console.print(
-                    f"[yellow]⚠ GitHub API 配额即将用尽，重置时间: "
-                    f"{reset_time.strftime('%H:%M:%S UTC')}[/yellow]"
+                logger.warning(
+                    "⚠ GitHub API 配额即将用尽，重置时间: %s",
+                    reset_time.strftime('%H:%M:%S UTC'),
                 )
-            console.print("[dim]提示：设置 GITHUB_TOKEN 环境变量可提高配额[/dim]")
+            logger.debug("提示：设置 GITHUB_TOKEN 环境变量可提高配额")
 
     # ------------------------------------------------------------------
     # 辅助：获取当前用户/仓库等
     # ------------------------------------------------------------------
 
-    def get_repo_detail(self, owner: str, repo: str) -> Optional[RepoInfo]:
+    def get_repo_detail(self, owner: str, repo: str) -> RepoInfo | None:
         """获取单个仓库的详细信息（按需使用）"""
         try:
-            resp = self.session.get(f"{GITHUB_API}/repos/{owner}/{repo}", timeout=20)
+            resp = self.session.get(f"{GITHUB_API}/repos/{owner}/{repo}", timeout=GITHUB_REPO_TIMEOUT)
             resp.raise_for_status()
             return self._parse_repo(resp.json())
-        except Exception as e:
-            console.print(f"[red]✗ 获取仓库信息失败: {e}[/red]")
+        except (NetworkError, GitHubAPIError, ValueError, KeyError) as e:
+            logger.error("✗ 获取仓库信息失败: %s", e)
             return None

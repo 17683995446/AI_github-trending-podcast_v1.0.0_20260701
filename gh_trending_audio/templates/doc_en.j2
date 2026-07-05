@@ -8,8 +8,8 @@
 | Field | Info |
 |-------|------|
 | Repository | [{{ repo.full_name }}]({{ repo.url }}) |
-| Stars | ⭐ {{ "{:,}".format(repo.stars) }} |
-| Forks | 🍴 {{ "{:,}".format(repo.forks) }} |
+| Stars | {{ "{:,}".format(repo.stars) }} |
+| Forks | {{ "{:,}".format(repo.forks) }} |
 | Language | {{ repo.language or 'N/A' }} |
 | License | {{ repo.license_name or 'N/A' }} |
 | Topics | {{ topics_str }} |

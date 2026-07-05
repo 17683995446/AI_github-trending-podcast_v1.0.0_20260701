@@ -18,7 +18,7 @@ class TestPathTraversalProtection:
 
     def test_normal_path_allowed(self):
         """正常路径应被允许访问。"""
-        from gh_trending_audio.web.handler import DashboardHandler
+        from gh_trending_audio.web.api_handlers import serve_file
         # 模拟正常文件访问
         with tempfile.TemporaryDirectory() as tmpdir:
             test_file = Path(tmpdir) / "test.md"
@@ -64,22 +64,21 @@ class TestConfigNoHardcodedKey:
 
     def test_default_key_is_empty(self):
         """LLM_API_KEY 默认值应为空字符串。"""
-        # 重新导入 config 模块（不带环境变量）
-        import importlib
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("LLM_API_KEY", None)
             import gh_trending_audio.config as config
-            importlib.reload(config)
+            config.reset_config()
             assert config.LLM_API_KEY == "", \
                 "LLM_API_KEY 默认值应为空字符串，不应包含硬编码密钥"
+            config.reset_config()  # 清理：让后续测试重新加载
 
     def test_env_var_overrides_default(self):
         """环境变量应能覆盖默认值。"""
         with patch.dict(os.environ, {"LLM_API_KEY": "sk-test-key"}):
-            import importlib
             import gh_trending_audio.config as config
-            importlib.reload(config)
+            config.reset_config()
             assert config.LLM_API_KEY == "sk-test-key"
+            config.reset_config()  # 清理
 
     def test_no_key_in_source(self):
         """源码中不应出现 sk- 前缀的密钥。"""

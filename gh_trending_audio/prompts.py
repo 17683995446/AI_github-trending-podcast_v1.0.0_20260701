@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from .styles import PodcastStyle, get_style
 
 if TYPE_CHECKING:
-    from .github_fetcher import RepoInfo
+    from .models import RepoInfo
 
 
 # =====================================================================
